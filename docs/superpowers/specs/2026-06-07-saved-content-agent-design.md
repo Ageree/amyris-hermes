@@ -177,7 +177,11 @@ Per paying user/mo: infra $0.3–1.5 (GCP credits → then real) + MiniMax ≈ $
 - **Phase 2 — Деньги (≈2 weeks):** Paddle, freemium quotas, TCPA full,
   public beta. Exit: first paying strangers.
 - **Phase 3 — Масштаб (later):** Apple Messages for Business application,
-  transactions via drafts, premium tier, host migration decision.
+  transactions via drafts + **user-funded fixed-amount virtual cards
+  (AgentCard, agentcard.sh — MCP-plugin: user confirms draft → funds card for
+  the exact amount via hosted Stripe checkout → agent pays; card balance = max
+  possible loss; we never hold user funds)**, premium tier, host migration
+  decision.
 
 ## 10. Testing
 
