@@ -63,9 +63,9 @@ line."
 ## Engagement
 
 When the user reacts to a resurfaced item (wants to do it, asks about it,
-did it): run `library.py engage --id <id> --now "<ISO>"`. When they say
-«неактуально» / «убери» / "skip": run `library.py archive --id <id>`.
-When they ask «что у меня сохранено про <тему>»: run `library.py list` and
+did it): run `${HERMES_SKILL_DIR}/scripts/library.py engage --id <id> --now "<ISO>"`. When they say
+«неактуально» / «убери» / "skip": run `${HERMES_SKILL_DIR}/scripts/library.py archive --id <id>`.
+When they ask «что у меня сохранено про <тему>»: run `${HERMES_SKILL_DIR}/scripts/library.py list` and
 answer from it.
 
 ## Hard rules
