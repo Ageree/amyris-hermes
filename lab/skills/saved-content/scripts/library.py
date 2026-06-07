@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Saved-content item store. One JSON file, atomic rewrites, pure-function updates."""
-import argparse, json, os, sys, tempfile
+import argparse, json, os, tempfile
 from datetime import datetime, timedelta
 
 INTERVALS_DAYS = [1, 3, 7]      # FR-010 cadence; index past end => archive
@@ -13,7 +13,9 @@ def load(db):
         return json.load(f)
 
 def save(db, items):
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(os.path.abspath(db)) or ".")
+    d = os.path.dirname(os.path.abspath(db))
+    os.makedirs(d, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=d)
     with os.fdopen(fd, "w") as f:
         json.dump(items, f, ensure_ascii=False, indent=1)
     os.replace(tmp, db)
