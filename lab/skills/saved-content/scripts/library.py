@@ -64,13 +64,19 @@ def cmd_engage(a):
         return _with_resurface(i, interval_index=idx, ignores=0, next_due=nxt)
     new = [adv(i) if i["id"] == iid else i for i in items]
     save(a.db, new)
-    return next(i for i in new if i["id"] == iid)
+    match = next((i for i in new if i["id"] == iid), None)
+    if match is None:
+        raise SystemExit(f"id {iid} not found")
+    return match
 
 def cmd_archive(a):
     items, iid = load(a.db), int(a.id)
     new = [_with_resurface(i, archived=True) if i["id"] == iid else i for i in items]
     save(a.db, new)
-    return next(i for i in new if i["id"] == iid)
+    match = next((i for i in new if i["id"] == iid), None)
+    if match is None:
+        raise SystemExit(f"id {iid} not found")
+    return match
 
 def main():
     p = argparse.ArgumentParser()

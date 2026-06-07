@@ -74,3 +74,13 @@ def test_archive_command(tmp_path):
     _add(db)
     out = run(["archive", "--id", "1"], db)
     assert out["resurface"]["archived"] is True
+
+def test_engage_unknown_id_errors_cleanly(tmp_path):
+    db = tmp_path / "items.json"
+    _add(db)
+    out = subprocess.run([sys.executable, str(SCRIPT), "engage", "--id", "999",
+                          "--now", "2026-06-08T14:00:00", "--db", str(db)],
+                         capture_output=True, text=True)
+    assert out.returncode != 0
+    assert "999" in out.stderr and "not found" in out.stderr
+    assert "Traceback" not in out.stderr
