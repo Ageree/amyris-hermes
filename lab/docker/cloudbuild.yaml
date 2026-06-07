@@ -1,0 +1,15 @@
+# Builds the resolver-core image; the Dockerfile's `RUN pytest` runs the suite
+# INSIDE GCP Cloud Build, so a green build == tests passing in the cloud.
+steps:
+  - name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - -t
+      - us-central1-docker.pkg.dev/$PROJECT_ID/saved-content/resolver-core:lab
+      - -f
+      - lab/docker/Dockerfile
+      - .
+images:
+  - us-central1-docker.pkg.dev/$PROJECT_ID/saved-content/resolver-core:lab
+options:
+  logging: CLOUD_LOGGING_ONLY

@@ -1,0 +1,9 @@
+# Keep the Cloud Build context small — exclude venvs, git, caches, node_modules.
+.git/
+**/.venv/
+**/__pycache__/
+**/.pytest_cache/
+node_modules/
+.frankenstein/
+.claude/
+*.jsonl
