@@ -44,6 +44,7 @@ def test_resolve_video_invokes_ytdlp(monkeypatch, tmp_path):
     assert "yt-dlp" in calls["cmd"][0]
     assert out["text"] == "vibe coding 101"
     assert out["media"][0].endswith("video.mp4")
+    assert not any("info.json" in p for p in out["media"])
 
 def test_resolve_failure_is_honest(monkeypatch, tmp_path):
     def fake_run(cmd, capture_output, text, timeout):
@@ -60,3 +61,17 @@ def test_resolve_article_uses_jina(monkeypatch, tmp_path):
     monkeypatch.setattr(resolve.requests, "get", lambda url, timeout, headers=None: R())
     out = resolve.resolve("https://example.com/post", str(tmp_path))
     assert out["ok"] and "Clean article" in out["text"]
+
+def test_fxtwitter_rewrites_mobile_x_host(monkeypatch):
+    seen = {}
+    fixture = {"tweet": {"text": "hi", "media": {"photos": []}}}
+    class R:
+        status_code = 200
+        def json(self): return fixture
+    def fake_get(url, timeout):
+        seen["url"] = url
+        return R()
+    monkeypatch.setattr(resolve.requests, "get", fake_get)
+    out = resolve.resolve("https://mobile.x.com/a/status/9", "/tmp/out")
+    assert out["ok"] and out["source"] == "x"
+    assert seen["url"].startswith("https://api.fxtwitter.com")

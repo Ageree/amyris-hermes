@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Resolve a shared URL into text + media files on disk for the agent to analyze."""
-import argparse, json, os, re, subprocess, sys
+import argparse, json, os, re, subprocess
 import requests
 
 def classify(url):
@@ -28,7 +28,7 @@ def _ytdlp(url, out_dir):
     return {"ok": True, "text": text, "media": media}
 
 def _fxtwitter(url):
-    api = re.sub(r"https?://(www\.)?(x|twitter|mobile\.twitter)\.com", "https://api.fxtwitter.com", url)
+    api = re.sub(r"https?://(?:www\.|mobile\.)?(x|twitter|mobile\.twitter)\.com", "https://api.fxtwitter.com", url)
     r = requests.get(api, timeout=30)
     if r.status_code != 200:
         return {"ok": False, "error": f"fxtwitter HTTP {r.status_code}"}
