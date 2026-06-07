@@ -10,6 +10,8 @@ def test_classify_sources():
     assert classify("https://www.tiktok.com/@u/video/7301") == "tiktok"
     assert classify("https://x.com/elonmusk/status/123") == "x"
     assert classify("https://twitter.com/a/status/9") == "x"
+    assert classify("https://mobile.twitter.com/a/status/9") == "x"
+    assert classify("https://mobile.x.com/a/status/9") == "x"
     assert classify("https://youtu.be/dQw4w9WgXcQ") == "youtube"
     assert classify("https://www.youtube.com/shorts/abc") == "youtube"
     assert classify("https://example.com/some-article") == "article"
