@@ -11,13 +11,27 @@ def classify(url):
     if "youtube.com" in host or host == "youtu.be": return "youtube"
     return "article"
 
-def _ytdlp(url, out_dir):
-    cmd = ["yt-dlp", "--no-playlist", "--write-info-json",
-           "--write-auto-subs", "--sub-langs", "en,ru", "--max-filesize", "200M",
-           "-o", os.path.join(out_dir, "video.%(ext)s"), url]
-    p = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+def _ytdlp_cmd(url: str, out_dir: str, impersonate: bool) -> list:
+    """Build the yt-dlp argument list.  Includes --impersonate chrome when requested."""
+    base = ["yt-dlp", "--no-playlist", "--write-info-json",
+            "--write-auto-subs", "--sub-langs", "en,ru", "--max-filesize", "200M"]
+    if impersonate:
+        base += ["--impersonate", "chrome"]
+    base += ["-o", os.path.join(out_dir, "video.%(ext)s"), url]
+    return base
+
+
+def _ytdlp(url: str, out_dir: str) -> dict:
+    """Run yt-dlp with TLS impersonation; fall back without it if curl_cffi is absent."""
+    p = subprocess.run(_ytdlp_cmd(url, out_dir, impersonate=True),
+                       capture_output=True, text=True, timeout=180)
     if p.returncode != 0:
-        return {"ok": False, "error": p.stderr[-500:]}
+        if "impersonate" in p.stderr.lower():
+            # curl_cffi not available in this yt-dlp build — retry without the flag
+            p = subprocess.run(_ytdlp_cmd(url, out_dir, impersonate=False),
+                                capture_output=True, text=True, timeout=180)
+        if p.returncode != 0:
+            return {"ok": False, "error": p.stderr[-500:]}
     info_path = os.path.join(out_dir, "video.info.json")
     text = ""
     if os.path.exists(info_path):

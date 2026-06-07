@@ -75,3 +75,63 @@ def test_fxtwitter_rewrites_mobile_x_host(monkeypatch):
     out = resolve.resolve("https://mobile.x.com/a/status/9", "/tmp/out")
     assert out["ok"] and out["source"] == "x"
     assert seen["url"].startswith("https://api.fxtwitter.com")
+
+
+# --- New TDD tests for _ytdlp impersonation ---
+
+def test_ytdlp_cmd_includes_impersonate():
+    cmd_with = resolve._ytdlp_cmd("https://x", "/tmp/o", True)
+    assert "--impersonate" in cmd_with
+    idx = cmd_with.index("--impersonate")
+    assert cmd_with[idx + 1] == "chrome"
+
+    cmd_without = resolve._ytdlp_cmd("https://x", "/tmp/o", False)
+    assert "--impersonate" not in cmd_without
+
+
+def test_ytdlp_retries_without_impersonation_on_unavailable(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(list(cmd))
+        if "--impersonate" in cmd:
+            class P:
+                returncode = 1
+                stderr = "ERROR: no impersonate target is available"
+            return P()
+        else:
+            (tmp_path / "video.mp4").write_bytes(b"x")
+            (tmp_path / "video.info.json").write_text(
+                json.dumps({"description": "ok"})
+            )
+            class P:
+                returncode = 0
+                stderr = ""
+            return P()
+
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    result = resolve._ytdlp("https://youtu.be/abc", str(tmp_path))
+
+    assert len(calls) == 2
+    assert "--impersonate" in calls[0]
+    assert "--impersonate" not in calls[1]
+    assert result["ok"] is True
+    assert result["text"] == "ok"
+
+
+def test_ytdlp_real_failure_is_still_honest(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(cmd, capture_output, text, timeout):
+        calls.append(list(cmd))
+        class P:
+            returncode = 1
+            stderr = "login required"
+        return P()
+
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    result = resolve._ytdlp("https://www.instagram.com/reel/PRIVATE/", str(tmp_path))
+
+    assert len(calls) == 1
+    assert result["ok"] is False
+    assert "login required" in result["error"]
