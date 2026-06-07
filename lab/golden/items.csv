@@ -1,0 +1,12 @@
+n,url,type,note,resolved,source_of_run
+1,https://www.paulgraham.com/ds.html,article,"PG ""Do Things that Don't Scale""",yes,full-e2e-save+card
+2,https://blog.samaltman.com/how-to-be-successful,article,Sam Altman essay,yes,resolve-probe
+3,https://x.com/naval/status/1002103360646823936,x,Naval tweet (old/stable),yes,resolve-probe
+4,https://www.youtube.com/watch?v=dQw4w9WgXcQ,youtube,Rick Astley (stable),partial,"resolve-probe: needs --impersonate+curl_cffi (proven works in lab venv; brew yt-dlp lacks it)"
+5,https://www.instagram.com/reel/C8XbOLZyhqz/,instagram,public reel,no,"resolve-probe: IG requires login — needs ScrapeCreators/Apify or cookies"
+6,https://www.tiktok.com/@khaby.lame/video/7137723462233444613,tiktok,Khaby Lame,partial,"resolve-probe: needs impersonation backend (same fix as YouTube)"
+
+# NOTE: This is a SYNTHETIC public golden set assembled autonomously (operator's
+# 20 real X/IG bookmarks were not available during the overnight run). Swap in the
+# operator's real saves (≥6 IG incl carousel, ≥5 X incl threads, ≥3 TikTok, ≥2 YT,
+# ≥2 articles, ≥1 screenshot) for the real SC-001 pass/fail.
