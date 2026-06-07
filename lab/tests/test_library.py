@@ -1,4 +1,4 @@
-import json, subprocess, sys
+import json, os, subprocess, sys
 from pathlib import Path
 
 SCRIPT = Path(__file__).parent.parent / "skills/saved-content/scripts/library.py"
@@ -84,3 +84,45 @@ def test_engage_unknown_id_errors_cleanly(tmp_path):
     assert out.returncode != 0
     assert "999" in out.stderr and "not found" in out.stderr
     assert "Traceback" not in out.stderr
+
+
+# --- TDD: default_db() must honor HERMES_HOME (fleet isolation fix) ---
+
+sys.path.insert(0, str(SCRIPT.parent))
+from library import default_db
+
+
+def test_default_db_falls_back_to_dot_hermes(monkeypatch):
+    """Without HERMES_HOME set, default_db() returns ~/.hermes/saved-content/items.json."""
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    result = default_db()
+    expected = os.path.join(os.path.expanduser("~/.hermes"), "saved-content", "items.json")
+    assert result == expected
+
+
+def test_default_db_respects_hermes_home(tmp_path, monkeypatch):
+    """With HERMES_HOME=X, default_db() returns X/saved-content/items.json."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    result = default_db()
+    assert result == str(tmp_path / "saved-content" / "items.json")
+
+
+def test_add_without_db_flag_writes_to_hermes_home(tmp_path, monkeypatch):
+    """A no-`--db` add subprocess writes to HERMES_HOME/saved-content/items.json."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    env = {**os.environ, "HERMES_HOME": str(tmp_path)}
+    out = subprocess.run(
+        [sys.executable, str(SCRIPT), "add",
+         "--url", "https://example.com/1",
+         "--essence", "fleet isolation test",
+         "--steps", "[]",
+         "--category", "test",
+         "--now", "2026-06-08T10:00:00"],
+        capture_output=True, text=True, env=env,
+    )
+    assert out.returncode == 0, out.stderr
+    db_path = tmp_path / "saved-content" / "items.json"
+    assert db_path.exists(), f"Expected db at {db_path}"
+    items = json.loads(db_path.read_text())
+    assert len(items) == 1
+    assert items[0]["url"] == "https://example.com/1"

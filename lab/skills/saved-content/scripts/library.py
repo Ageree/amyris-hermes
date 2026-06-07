@@ -6,6 +6,12 @@ from datetime import datetime, timedelta
 INTERVALS_DAYS = [1, 3, 7]      # FR-010 cadence; index past end => archive
 MAX_IGNORES = 3                 # FR-012
 
+
+def default_db() -> str:
+    """Return the default DB path, honoring HERMES_HOME for per-container isolation."""
+    home = os.environ.get("HERMES_HOME") or os.path.expanduser("~/.hermes")
+    return os.path.join(home, "saved-content", "items.json")
+
 def load(db):
     if not os.path.exists(db):
         return []
@@ -93,7 +99,7 @@ def main():
     par = sub.add_parser("archive")
     par.add_argument("--id", required=True)
     for sp in sub.choices.values():
-        sp.add_argument("--db", default=os.path.expanduser("~/.hermes/saved-content/items.json"))
+        sp.add_argument("--db", default=default_db())
     a = p.parse_args()
     print(json.dumps({"add": cmd_add, "list": cmd_list,
                       "due": cmd_due, "engage": cmd_engage, "archive": cmd_archive}[a.cmd](a),
