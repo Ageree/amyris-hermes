@@ -15,3 +15,48 @@ def test_classify_sources():
     assert classify("https://youtu.be/dQw4w9WgXcQ") == "youtube"
     assert classify("https://www.youtube.com/shorts/abc") == "youtube"
     assert classify("https://example.com/some-article") == "article"
+
+import json, resolve
+
+def test_resolve_x_uses_fxtwitter(monkeypatch):
+    fixture = {"tweet": {"text": "Pull backlinks for any domain free",
+                         "media": {"photos": [{"url": "https://pbs.img/1.jpg"}]}}}
+    class R:
+        status_code = 200
+        def json(self): return fixture
+    monkeypatch.setattr(resolve.requests, "get", lambda url, timeout: R())
+    out = resolve.resolve("https://x.com/a/status/123", "/tmp/out")
+    assert out["ok"] and out["source"] == "x"
+    assert "backlinks" in out["text"]
+    assert out["media_urls"] == ["https://pbs.img/1.jpg"]
+
+def test_resolve_video_invokes_ytdlp(monkeypatch, tmp_path):
+    calls = {}
+    def fake_run(cmd, capture_output, text, timeout):
+        calls["cmd"] = cmd
+        (tmp_path / "video.mp4").write_bytes(b"x")
+        (tmp_path / "video.info.json").write_text(json.dumps({"description": "vibe coding 101"}))
+        class P: returncode = 0; stderr = ""
+        return P()
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    out = resolve.resolve("https://www.tiktok.com/@u/video/7301", str(tmp_path))
+    assert out["ok"] and out["source"] == "tiktok"
+    assert "yt-dlp" in calls["cmd"][0]
+    assert out["text"] == "vibe coding 101"
+    assert out["media"][0].endswith("video.mp4")
+
+def test_resolve_failure_is_honest(monkeypatch, tmp_path):
+    def fake_run(cmd, capture_output, text, timeout):
+        class P: returncode = 1; stderr = "login required"
+        return P()
+    monkeypatch.setattr(resolve.subprocess, "run", fake_run)
+    out = resolve.resolve("https://www.instagram.com/reel/PRIVATE/", str(tmp_path))
+    assert out["ok"] is False and "login required" in out["error"]
+
+def test_resolve_article_uses_jina(monkeypatch, tmp_path):
+    class R:
+        status_code = 200
+        text = "# Title\n\nClean article text"
+    monkeypatch.setattr(resolve.requests, "get", lambda url, timeout, headers=None: R())
+    out = resolve.resolve("https://example.com/post", str(tmp_path))
+    assert out["ok"] and "Clean article" in out["text"]
