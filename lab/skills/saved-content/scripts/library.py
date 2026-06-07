@@ -36,6 +36,42 @@ def cmd_add(a):
 def cmd_list(a):
     return load(a.db)
 
+def _with_resurface(item, **changes):
+    return {**item, "resurface": {**item["resurface"], **changes}}
+
+def cmd_due(a):
+    items, now = load(a.db), a.now
+    due = [i for i in items if not i["resurface"]["archived"]
+           and i["resurface"]["next_due"] <= now]
+    def bump(i):
+        ign = i["resurface"]["ignores"] + 1
+        if ign >= MAX_IGNORES:
+            return _with_resurface(i, ignores=ign, archived=True)
+        days = INTERVALS_DAYS[i["resurface"]["interval_index"]]
+        nxt = (datetime.fromisoformat(now) + timedelta(days=days)).isoformat()
+        return _with_resurface(i, ignores=ign, next_due=nxt)
+    due_ids = {i["id"] for i in due}
+    save(a.db, [bump(i) if i["id"] in due_ids else i for i in items])
+    return due
+
+def cmd_engage(a):
+    items, iid = load(a.db), int(a.id)
+    def adv(i):
+        idx = i["resurface"]["interval_index"] + 1
+        if idx >= len(INTERVALS_DAYS):
+            return _with_resurface(i, interval_index=idx, ignores=0, archived=True)
+        nxt = (datetime.fromisoformat(a.now) + timedelta(days=INTERVALS_DAYS[idx])).isoformat()
+        return _with_resurface(i, interval_index=idx, ignores=0, next_due=nxt)
+    new = [adv(i) if i["id"] == iid else i for i in items]
+    save(a.db, new)
+    return next(i for i in new if i["id"] == iid)
+
+def cmd_archive(a):
+    items, iid = load(a.db), int(a.id)
+    new = [_with_resurface(i, archived=True) if i["id"] == iid else i for i in items]
+    save(a.db, new)
+    return next(i for i in new if i["id"] == iid)
+
 def main():
     p = argparse.ArgumentParser()
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -43,10 +79,19 @@ def main():
     for f in ("--url", "--essence", "--steps", "--category", "--now"):
         pa.add_argument(f, required=True)
     sub.add_parser("list")
+    pd = sub.add_parser("due")
+    pd.add_argument("--now", required=True)
+    pe = sub.add_parser("engage")
+    pe.add_argument("--id", required=True)
+    pe.add_argument("--now", required=True)
+    par = sub.add_parser("archive")
+    par.add_argument("--id", required=True)
     for sp in sub.choices.values():
         sp.add_argument("--db", default=os.path.expanduser("~/.hermes/saved-content/items.json"))
     a = p.parse_args()
-    print(json.dumps({"add": cmd_add, "list": cmd_list}[a.cmd](a), ensure_ascii=False))
+    print(json.dumps({"add": cmd_add, "list": cmd_list,
+                      "due": cmd_due, "engage": cmd_engage, "archive": cmd_archive}[a.cmd](a),
+                     ensure_ascii=False))
 
 if __name__ == "__main__":
     main()
