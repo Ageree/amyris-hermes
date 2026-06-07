@@ -272,8 +272,9 @@ lift immediately; cancel → access persists till period end, then reverts.
 
 **Personalization**
 - **FR-030**: Each agent MUST maintain a per-user playbook (preferences, style,
-  what worked) updated automatically from conversations, bounded in size, and
-  applied to future cards and pings.
+  what worked) updated automatically from conversations, bounded in size
+  (≤ ~4 KB, oldest-least-useful entries consolidated out), and applied to
+  future cards and pings.
 - **FR-031**: The agent's persona MUST be consistent (brand voice: warm,
   concise, texting-style — multi-message bursts allowed, no walls of text) with
   per-user adaptation layered on top.
@@ -296,6 +297,10 @@ lift immediately; cancel → access persists till period end, then reverts.
 - **FR-050**: Free tier: 20 saves + 10 agent actions per calendar month;
   counters visible on request ("сколько у меня осталось?"). Paid tier
   ($9–13/mo): 300 saves + 100 actions (soft caps, abuse-guarded).
+  Definitions: a *save* = one accepted shared item (FR-001); an *action* = one
+  user-requested task that runs tools beyond conversation (research errand,
+  draft creation/execution, calendar/integration operation). Plain chat,
+  recall queries and resurface pings are never metered.
 - **FR-051**: Checkout, subscription management and global sales-tax handling
   MUST go through a merchant-of-record; entitlement changes apply ≤ 1 min after
   the payment webhook.
