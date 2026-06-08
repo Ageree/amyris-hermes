@@ -59,20 +59,62 @@ admin key. The HTTP webhook uses its own path-token secret.
 
 ## The brain (worker)
 
-See `../lab/skeleton/worker.py` + `run-worker.sh`. Start it with:
+See `../lab/skeleton/worker.py`. Two ways to run it:
 
-```bash
-../lab/skeleton/run-worker.sh        # polls forever; Ctrl-C to stop
-```
+- **Foreground (dev):** `../lab/skeleton/run-worker.sh` (polls forever; Ctrl-C to stop).
+- **Permanent (launchd daemon) — recommended:** `../lab/skeleton/deploy-worker.sh`
+  then load the LaunchAgent (see below). Survives logout/reboot + auto-respawns on crash.
 
 It needs `CONVEX_URL` + `WORKER_SECRET` (and the Sendblue creds) in
 `~/.hermes-savedlab/.env`.
 
-## Going live (operator, one-time, ~2 min)
+### Permanent worker via launchd (the TCC catch)
 
-1. Paste this into Sendblue dashboard → Settings → Webhooks:
-   `https://zany-tapir-501.convex.site/sendblue/inbound/<WEBHOOK_SECRET>`
-2. Start the worker (`run-worker.sh`).
-3. iMessage the Sendblue number (`+16466208124`) any browser task.
+A LaunchAgent pointed at the repo copy **fails** — macOS TCC denies a launchd
+daemon from reading file *contents* under `~/Documents` (exit 126 /
+"Operation not permitted"); the interactive shell only works because it inherits
+a TCC grant. **Fix: run the worker from OUTSIDE `~/Documents`.**
+`deploy-worker.sh` copies the 4 worker modules + a self-contained venv to
+`~/.hermes-savedlab/worker/` (a dotfolder, not TCC-protected) and writes its
+`run.sh`. The repo stays source-of-truth — re-run `deploy-worker.sh` after editing
+any worker module, then `launchctl kickstart -k gui/$(id -u)/com.savedcontent.worker`.
 
-Verified live e2e 2026-06-08 (see `../lab/REPORT.md` → "Phase-1C").
+LaunchAgent at `~/Library/LaunchAgents/com.savedcontent.worker.plist`
+(RunAtLoad + KeepAlive; `PATH` includes `/opt/homebrew/bin` so `agent-browser`
+resolves; logs to `~/.hermes-savedlab/logs/`). Load:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.savedcontent.worker.plist
+launchctl enable gui/$(id -u)/com.savedcontent.worker
+launchctl kickstart -k gui/$(id -u)/com.savedcontent.worker
+launchctl list | grep com.savedcontent.worker   # col1=PID (live), col2=last exit
+```
+
+### Persistent logins (agent-browser native profile)
+
+`AGENT_BROWSER_PROFILE=~/.hermes-savedlab/browser-profile` in `~/.hermes-savedlab/.env`
+makes the browser persist cookies/logins across runs (chosen over Camofox: no
+install, no config.yaml change, agent-browser stays the default backend, fully
+reversible). **One-time per site**, the operator logs in once in a visible window
+(`agent-browser close` first — the daemon ignores `--profile` if already up):
+
+```bash
+AGENT_BROWSER_PROFILE=~/.hermes-savedlab/browser-profile /opt/homebrew/bin/agent-browser close
+AGENT_BROWSER_PROFILE=~/.hermes-savedlab/browser-profile /opt/homebrew/bin/agent-browser --headed open https://SITE/login
+#   ...log in by hand (incl 2FA)...
+/opt/homebrew/bin/agent-browser close      # `close` is the real save/restart
+```
+Afterwards the headless worker reuses that session every run. One profile = one
+worker at a time (satisfied: exactly one launchd worker).
+
+## Going live — DONE (2026-06-08)
+
+1. ~~Paste the webhook into the Sendblue dashboard~~ → **set via `@sendblue/cli`**
+   (`webhooks add … --type receive`); confirmed with `sendblue webhooks list`.
+2. ~~Start the worker~~ → **running as the launchd daemon** above.
+3. iMessage `+16466208124` any browser task → it works.
+
+Verified live e2e 2026-06-08 (see `../lab/REPORT.md`): real inbound iMessage
+("10 Pinterest pins for grisch") round-tripped through Sendblue → Convex queue →
+worker → Hermes(M3+browser) → iPhone; launchd KeepAlive respawn + queue e2e
+re-verified after relocation.
