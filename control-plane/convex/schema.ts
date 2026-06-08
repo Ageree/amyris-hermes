@@ -26,4 +26,18 @@ export default defineSchema({
   })
     .index("by_handle", ["handle"])
     .index("by_status", ["status", "receivedAt"]),
+
+  // Pending "connect intents": when the agent sends a connect-link for a task, it
+  // records the original task + the toolkits it needs. The worker polls Composio
+  // status; when all required toolkits are ACTIVE it enqueues a synthetic resume
+  // message (resolveIntent) so the task completes itself — no 2nd user message.
+  connectIntents: defineTable({
+    userNumber: v.string(),
+    taskText: v.string(),
+    requiredToolkits: v.array(v.string()),
+    connectedToolkits: v.array(v.string()),
+    status: v.union(v.literal("pending"), v.literal("resumed"), v.literal("expired")),
+    createdAt: v.number(),
+    resumedAt: v.optional(v.number()),
+  }).index("by_status", ["status", "createdAt"]),
 });
