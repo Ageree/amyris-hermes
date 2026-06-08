@@ -18,6 +18,7 @@ export HERMES_DIR="${HERMES_DIR:-$HOME/hermes-agent}"
 export HERMES_PYTHON_BIN="${HERMES_PYTHON_BIN:-$HOME/hermes-agent/venv/bin/python}"
 export POLL_INTERVAL="${POLL_INTERVAL:-2.0}"
 export HERMES_TIMEOUT="${HERMES_TIMEOUT:-220}"
+export COMPOSIO_USER_ID="${COMPOSIO_USER_ID:-$ALLOWED_USER_NUMBER}"
 
 : "${CONVEX_URL:?set CONVEX_URL in ~/.hermes-savedlab/.env}"
 : "${WORKER_SECRET:?set WORKER_SECRET in ~/.hermes-savedlab/.env}"

@@ -22,6 +22,11 @@ for m in "${MODULES[@]}"; do
   cp "$SRC/$m" "$DEST/$m"
 done
 
+# Composio client (worker imports it for intent polling) + the connections skill
+# scripts (so they're available to the deployed worker's Hermes via the skill dir).
+CONN_SRC="$(cd "$SRC/../skills/connections/scripts" && pwd)"
+cp "$CONN_SRC/composio_api.py" "$DEST/composio_api.py"
+
 # Self-contained venv (the repo lab/.venv is under ~/Documents -> unreadable by
 # launchd). Created with the system python; only needs `requests`.
 if [ ! -x "$DEST/venv/bin/python" ]; then
@@ -42,6 +47,7 @@ export HERMES_DIR="${HERMES_DIR:-$HOME/hermes-agent}"
 export HERMES_PYTHON_BIN="${HERMES_PYTHON_BIN:-$HOME/hermes-agent/venv/bin/python}"
 export POLL_INTERVAL="${POLL_INTERVAL:-2.0}"
 export HERMES_TIMEOUT="${HERMES_TIMEOUT:-220}"
+export COMPOSIO_USER_ID="${COMPOSIO_USER_ID:-$ALLOWED_USER_NUMBER}"
 : "${CONVEX_URL:?set CONVEX_URL in ~/.hermes-savedlab/.env}"
 : "${WORKER_SECRET:?set WORKER_SECRET in ~/.hermes-savedlab/.env}"
 : "${SENDBLUE_API_KEY_ID:?set SENDBLUE_API_KEY_ID in ~/.hermes-savedlab/.env}"
