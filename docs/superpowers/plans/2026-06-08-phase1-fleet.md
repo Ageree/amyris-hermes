@@ -31,7 +31,7 @@ The thinnest end-to-end slice that proves the *pivoted* architecture live: **you
 
 ### P1B — Browser, two lanes, hardened  → `phase1b-browser-lanes.md` (next to author)
 - **Lane A (Camofox):** `managed_persistence` per-user persistent profile; the "log in once → agent acts inside" UX (VNC live-view handoff); cookies survive restarts, isolated per `HERMES_HOME`.
-- **Lane B (browser-harness + Browserbase):** swap local Chrome for a Browserbase `wss://` session (`BU_CDP_WS`); enable `BH_DOMAIN_SKILLS=1` so per-site skills accumulate per user.
+- **Lane B (browser-harness on LOCAL headless Chrome):** runs inside the user's container, free, no signup (de-risked GREEN). Enable `BH_DOMAIN_SKILLS=1` so per-site skills accumulate per user. **Browserbase dropped 2026-06-08** (operator can't register) — a cloud lane (Browserbase or Browser Use Cloud free tier) is a deferred drop-in via `BU_CDP_WS`, NOT a v1 dependency.
 - **Saved-content becomes browser-first:** resolve reels/TikTok via the logged-in browser + M3 vision/native-video, public content via the cheap fast path. Retain cards + spaced resurfacing from the lab skill.
 
 ### P1C — Control plane (Convex) + router
@@ -47,8 +47,8 @@ Paddle (MoR) subscriptions → Entitlement. Onboarding: website button → provi
 
 ## Operator inputs by sub-plan (gather ahead — see session manifest)
 - **P1A:** a test iMessage from your iPhone to the shared number; possibly paste one webhook URL into the Sendblue dashboard (only if not API-settable).
-- **P1B:** Browserbase API key + Project ID (`browserbase.com`); a one-time login to whatever site you want the agent to act in (Lane A).
-- **P1C:** Convex login (`convex.dev`, GitHub/Google) when standing up the control plane.
+- **P1B:** ~~Browserbase~~ DROPPED (operator can't register) → Lane B on local Chrome, no input needed; a one-time login to whatever site you want the agent to act in (Lane A / Camofox).
+- **P1C:** ~~Convex login~~ **DONE — Convex plugin connected to operator's account 2026-06-08.**
 - **P1D:** confirm GCP billing active on `hermes-saved-content-lab`; DECIDE-3 funded MiniMax key.
 - **P1E:** Paddle seller account (`paddle.com` — note: business verification has lead time, start early).
 - **Hygiene (any time):** rotate + resend MiniMax + Sendblue keys (were in transcript).
