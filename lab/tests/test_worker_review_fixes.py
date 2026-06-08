@@ -129,3 +129,33 @@ def test_run_loop_polls_intents_on_wall_clock():
 def test_fast_lane_model_ok_only_for_m3():
     assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="MiniMax-M3")) is True
     assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="MiniMax-M2.7")) is False
+
+
+# ---- Medium lane: worker forwards the think params to fast_reply --------------
+
+def test_run_fast_lane_passes_medium_params(monkeypatch):
+    captured = {}
+    monkeypatch.setattr(worker, "fast_reply", lambda text, **kw: captured.update(kw) or "ok")
+    worker._run_fast_lane("x", _cfg_fast(
+        fast_probe_timeout=6.0, medium_lane_enabled=True,
+        medium_timeout=25.0, medium_max_tokens=2048,
+    ))
+    assert captured["timeout"] == 6.0
+    assert captured["medium"] is True
+    assert captured["think_timeout"] == 25.0
+    assert captured["think_max_tokens"] == 2048
+
+
+def test_config_from_env_medium_defaults(monkeypatch):
+    for k in ("MEDIUM_LANE_ENABLED", "MEDIUM_TIMEOUT", "MEDIUM_MAX_TOKENS"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in {
+        "CONVEX_URL": "u", "WORKER_SECRET": "w", "SENDBLUE_API_KEY_ID": "k",
+        "SENDBLUE_API_SECRET_KEY": "s", "SENDBLUE_FROM_NUMBER": "+1",
+        "ALLOWED_USER_NUMBER": "+1",
+    }.items():
+        monkeypatch.setenv(k, v)
+    cfg = WorkerConfig.from_env()
+    assert cfg.medium_lane_enabled is True
+    assert cfg.medium_timeout == 25.0
+    assert cfg.medium_max_tokens == 2048

@@ -124,6 +124,11 @@ class WorkerConfig:
     soul: str = ""
     fast_lane_enabled: bool = True
     fast_probe_timeout: float = 6.0     # tight cap so a slow probe defers to Hermes fast
+    # Medium lane: tool-free messages that need reasoning get a 2nd M3 call with
+    # thinking ON (no tools) — faster than Hermes, better than a thinking-off answer.
+    medium_lane_enabled: bool = True
+    medium_timeout: float = 25.0        # thinking needs more headroom than the probe
+    medium_max_tokens: int = 2048       # reasoning tokens count against this — keep generous
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -156,6 +161,9 @@ class WorkerConfig:
             soul=_load_soul(),
             fast_lane_enabled=_env_flag("FAST_LANE_ENABLED", True),
             fast_probe_timeout=float(os.environ.get("FAST_PROBE_TIMEOUT", "6.0")),
+            medium_lane_enabled=_env_flag("MEDIUM_LANE_ENABLED", True),
+            medium_timeout=float(os.environ.get("MEDIUM_TIMEOUT", "25.0")),
+            medium_max_tokens=int(os.environ.get("MEDIUM_MAX_TOKENS", "2048")),
         )
 
 
@@ -194,6 +202,9 @@ def _run_fast_lane(text: str, cfg: WorkerConfig) -> Optional[str]:
         base_url=cfg.minimax_base_url,
         model=cfg.minimax_model,
         timeout=cfg.fast_probe_timeout,
+        medium=cfg.medium_lane_enabled,
+        think_timeout=cfg.medium_timeout,
+        think_max_tokens=cfg.medium_max_tokens,
     )
 
 
