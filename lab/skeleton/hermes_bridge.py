@@ -44,8 +44,21 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
     if not message.strip():
         raise ValueError("empty message")
     env = {**os.environ, "HERMES_HOME": hermes_home}
+    # SECURITY (argv flag smuggling): `message` is UNTRUSTED — it is the raw text
+    # of an inbound iMessage and can be sent by any third party. cli.py uses
+    # python-fire (`fire.Fire(main)`), whose flags include dangerous ones like
+    # --api_key / --base_url / --provider / --image (arbitrary file read) /
+    # --ignore_rules. If the message were its own argv element, a message such as
+    # "--ignore_rules" would be parsed as a FLAG. We therefore fuse it into a
+    # single `--query=<message>` token: Fire splits flags across argv elements but
+    # never WITHIN one (it splits a token only on the first `=`), so any `--flag`
+    # inside the message stays part of the query string. Fire parses values with
+    # ast.literal_eval (no eval/RCE). The `--` separator the reviewer suggested is
+    # an argparse idiom and does NOT bind reliably in Fire — this does.
+    # (Edge case, deferred to P1B hardening: Fire literal-eval coerces a lone
+    # numeric/bool/bracket token, e.g. "123" -> int; harmless, not a security issue.)
     proc = subprocess.run(
-        [python_bin, f"{hermes_dir}/cli.py", "-q", message, "--quiet"],
+        [python_bin, f"{hermes_dir}/cli.py", "--quiet", f"--query={message}"],
         cwd=hermes_dir,
         env=env,
         capture_output=True,
