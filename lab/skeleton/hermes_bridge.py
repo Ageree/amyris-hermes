@@ -37,6 +37,20 @@ _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[=>]")
 # observed live 2026-06-08). A whole line beginning with the warning sign is
 # never part of the answer; drop it so it never reaches the user's iMessage.
 _NOTICE = re.compile(r"^[ \t]*⚠️?.*$", re.MULTILINE)
+# Headless Hermes still prints the WHOLE tool-permission prompt to stdout in
+# --quiet mode when a command trips the approval gate: a "⚠️ DANGEROUS COMMAND"
+# header, the echoed command (which may span MULTIPLE lines), the
+# [o]nce/[s]ession/[a]lways/[d]eny choices, and a resolution line. None of it is
+# the answer — observed live 2026-06-08 glued in front of an auto-resume gmail
+# reply that was texted to the user. Strip the entire block. MUST run before
+# _NOTICE (which removes the ⚠️ header line and would orphan the rest). The deny
+# still happens; this only cleans the user-facing reply text.
+_APPROVAL = re.compile(
+    r"^[ \t]*⚠️?\s*DANGEROUS COMMAND:.*?"
+    r"(?:✗ Denied|✗ Cancelled|✓ Allowed once|✓ Allowed for this session|"
+    r"✓ Added to permanent allowlist|⏱ Timeout - denying command)[ \t]*$",
+    re.DOTALL | re.MULTILINE,
+)
 
 
 def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
@@ -75,5 +89,6 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
         raise RuntimeError(f"hermes exited {proc.returncode}: {stderr[:500]}")
     cleaned = _THINK.sub("", proc.stdout)
     cleaned = _ANSI.sub("", cleaned)
+    cleaned = _APPROVAL.sub("", cleaned)
     cleaned = _NOTICE.sub("", cleaned).strip()
     return cleaned or "(no reply)"

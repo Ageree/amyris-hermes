@@ -73,6 +73,49 @@ def test_run_hermes_strips_leading_warning_notice():
     assert out == "Example Domain"
 
 
+def test_run_hermes_strips_dangerous_command_approval_block():
+    """Headless Hermes can hit a tool-permission gate; in --quiet mode it still
+    prints the whole approval prompt (header + the echoed command + the
+    [o]nce/[s]ession/[d]eny choices + the resolution line) to stdout, BEFORE the
+    real answer. Observed live 2026-06-08: an auto-resume gmail reply was texted
+    to the user with this scaffolding glued in front of the summary. The whole
+    block — including a MULTILINE command — must be stripped; only the answer
+    survives. (The deny still happens; this is reply-cleaning, not a policy
+    change.)"""
+    stdout = (
+        "\n  ⚠️  DANGEROUS COMMAND: run a shell pipe\n"
+        "      python3 /h/exec_tool.py GMAIL_FETCH_EMAILS '{\"q\": 1}' | python3 -c \"\n"
+        "import json, sys\n"
+        "print('parsed')\n"
+        "\"\n\n"
+        "      [o]nce  |  [s]ession  |  [d]eny\n\n"
+        "      Choice [o/s/D]:       ✗ Denied\n\n"
+        "посмотрел почту — 2 письма.\n"
+    )
+    fake = MagicMock(returncode=0, stdout=stdout, stderr="")
+    with patch("hermes_bridge.subprocess.run", return_value=fake):
+        out = run_hermes("q", hermes_home="/h", hermes_dir="/d", python_bin="/p")
+    assert out == "посмотрел почту — 2 письма."
+
+
+def test_run_hermes_strips_approval_block_on_timeout_and_allowed():
+    """The block must be stripped regardless of how the gate resolved
+    (timeout-deny or allowed), since the prompt scaffolding is never the
+    answer."""
+    for resolution in ("⏱ Timeout - denying command", "✓ Allowed once"):
+        stdout = (
+            "  ⚠️  DANGEROUS COMMAND: x\n"
+            "      ls -la /tmp\n\n"
+            "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny\n\n"
+            "      Choice [o/s/a/D]:       " + resolution + "\n\n"
+            "done.\n"
+        )
+        fake = MagicMock(returncode=0, stdout=stdout, stderr="")
+        with patch("hermes_bridge.subprocess.run", return_value=fake):
+            out = run_hermes("q", hermes_home="/h", hermes_dir="/d", python_bin="/p")
+        assert out == "done.", f"resolution={resolution!r} -> {out!r}"
+
+
 def test_run_hermes_raises_on_nonzero():
     fake = MagicMock(returncode=1, stdout="", stderr="boom")
     with patch("hermes_bridge.subprocess.run", return_value=fake):
