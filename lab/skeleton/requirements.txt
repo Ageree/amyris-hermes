@@ -1,0 +1,8 @@
+# Phase-1A skeleton webhook bridge deps (install into the LAB venv, NOT ~/hermes-agent/venv).
+# The bridge only subprocesses ~/hermes-agent/venv's python; the skeleton itself
+# must not pollute that venv. Verified working on the lab venv (Python 3.9.6).
+fastapi
+uvicorn
+requests
+httpx
+pytest
