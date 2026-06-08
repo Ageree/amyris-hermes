@@ -4,6 +4,9 @@ Throwaway spike for the Phase-1A walking skeleton — P1C supersedes it with the
 real TS/Convex router. Verified Sendblue facts (docs 2026-06-08):
   - Base https://api.sendblue.co/api ; auth headers sb-api-key-id / sb-api-secret-key
   - Send: POST /send-message with JSON {number, from_number, content}
+  - Typing indicator: POST /send-typing-indicator with JSON
+    {from_number, number, state:"start"|"stop", max_duration_ms?}. iMessage-only;
+    best-effort (a 200 "SENT" does NOT guarantee delivery if the chat is stale).
 """
 from __future__ import annotations
 
@@ -42,6 +45,42 @@ class SendblueClient:
         if not (200 <= r.status_code < 300):
             raise RuntimeError(
                 f"Sendblue send-message failed {r.status_code}: {r.text[:300]}"
+            )
+        return r.json()
+
+    def send_typing(
+        self,
+        to_number: str,
+        *,
+        state: str = "start",
+        max_duration_ms: Optional[int] = None,
+    ) -> dict:
+        """Fire an iMessage typing indicator (the "…" bubble) at `to_number`.
+
+        state="start" shows it; state="stop" clears it. `max_duration_ms` is an
+        optional auto-expiry hint (Sendblue's documented expiry is otherwise
+        unspecified — the worker re-fires on a timer well inside this window).
+
+        Best-effort by nature (iMessage-only; a stale chat still returns 200
+        "SENT" without delivering) — callers MUST treat failures as non-fatal and
+        never let a typing error block the actual reply.
+        """
+        if not to_number:
+            raise ValueError("to_number is required")
+        if state not in ("start", "stop"):
+            raise ValueError("state must be 'start' or 'stop'")
+        payload: dict = {"from_number": self._from, "number": to_number, "state": state}
+        if max_duration_ms is not None:
+            payload["max_duration_ms"] = int(max_duration_ms)
+        r = requests.post(
+            f"{SENDBLUE_BASE}/send-typing-indicator",
+            json=payload,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if not (200 <= r.status_code < 300):
+            raise RuntimeError(
+                f"Sendblue send-typing-indicator failed {r.status_code}: {r.text[:300]}"
             )
         return r.json()
 

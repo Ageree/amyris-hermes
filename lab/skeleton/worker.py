@@ -31,14 +31,34 @@ from hermes_bridge import run_hermes
 from sendblue_client import SendblueClient
 
 # Fast lane is a SOFT dependency: a stale/partial deploy (worker.py updated but
-# fast_lane.py not yet copied) must degrade to the unchanged Hermes-only path,
-# NOT crash-loop the always-on daemon at import time. Mirrors the composio guard.
+# fast_lane.py / bubbles.py not yet copied) must degrade to the unchanged
+# Hermes-only path, NOT crash-loop the always-on daemon at import time. Mirrors
+# the composio guard.
 try:
-    from fast_lane import contains_url, fast_reply
+    from fast_lane import contains_url, fast_reply, stream_fast_reply
 except Exception:  # pragma: no cover - exercised only on a broken deploy
     def contains_url(text: str) -> bool:  # noqa: ARG001 - stub keeps the daemon alive
         return False
     fast_reply = None
+    stream_fast_reply = None
+
+# Multi-bubble splitting + typing indicator are also soft deps (same stale-deploy
+# reasoning). If unavailable, the worker still replies — as a single message, with
+# no typing indicator.
+try:
+    from bubbles import split_into_bubbles, was_truncated
+except Exception:  # pragma: no cover
+    def split_into_bubbles(text, **_kw):  # type: ignore[no-redef]
+        t = (text or "").strip()
+        return [t] if t else []
+
+    def was_truncated(bubbles):  # type: ignore[no-redef]
+        return False
+
+try:
+    from typing_indicator import TypingKeepalive
+except Exception:  # pragma: no cover
+    TypingKeepalive = None
 
 # composio_api lives in the connections skill scripts; reachable in the repo layout
 # (../skills/connections/scripts) and in the deployed worker tree (same dir as this file).
@@ -141,6 +161,23 @@ class WorkerConfig:
     history_enabled: bool = True
     history_turns: int = 6              # how many recent done messages to recall
     history_char_cap: int = 600         # cap each stored text/reply (avoid huge tool dumps)
+    # Poke-style MULTI-BUBBLE: split a reply into a few short iMessage messages
+    # (blank-line paragraphs -> separate bubbles), paced bubble_delay apart so they
+    # arrive in order (Sendblue drains 1 msg/s and does NOT formally guarantee
+    # order). bubble_delay defaults to 0.0 in the dataclass so unit tests don't
+    # sleep; from_env sets the real production pacing.
+    multi_bubble_enabled: bool = True
+    bubble_max_count: int = 4
+    bubble_max_chars: int = 1200
+    bubble_delay: float = 0.0
+    # Typing indicator: show the "…" bubble while composing, re-fired on a timer
+    # through long turns. iMessage-only, best-effort (never blocks the reply).
+    typing_enabled: bool = True
+    typing_interval: float = 6.0
+    typing_max_duration_ms: int = 10000
+    # STREAMING fast lane: emit each bubble the moment it's ready (and detect a
+    # defer in <1s) instead of waiting for the whole answer. Requires multi-bubble.
+    streaming_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -179,6 +216,14 @@ class WorkerConfig:
             history_enabled=_env_flag("HISTORY_ENABLED", True),
             history_turns=int(os.environ.get("HISTORY_TURNS", "6")),
             history_char_cap=int(os.environ.get("HISTORY_CHAR_CAP", "600")),
+            multi_bubble_enabled=_env_flag("MULTI_BUBBLE_ENABLED", True),
+            bubble_max_count=int(os.environ.get("BUBBLE_MAX_COUNT", "4")),
+            bubble_max_chars=int(os.environ.get("BUBBLE_MAX_CHARS", "1200")),
+            bubble_delay=float(os.environ.get("BUBBLE_DELAY", "0.4")),
+            typing_enabled=_env_flag("TYPING_ENABLED", True),
+            typing_interval=float(os.environ.get("TYPING_INTERVAL", "6.0")),
+            typing_max_duration_ms=int(os.environ.get("TYPING_MAX_DURATION_MS", "10000")),
+            streaming_enabled=_env_flag("STREAMING_ENABLED", True),
         )
 
 
@@ -256,6 +301,188 @@ def _run_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list] = None)
     )
 
 
+def _run_stream_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list], on_bubble: Callable[[str], None]):
+    """Production STREAMING fast-lane call -> StreamResult.
+
+    Emits Poke-style bubbles via `on_bubble` as they are generated and resolves a
+    defer/think verdict from the first tokens. Same model/timeout/medium params as
+    the non-streaming `_run_fast_lane`, plus the bubble caps.
+    """
+    assert stream_fast_reply is not None  # guaranteed by the caller's gate
+    return stream_fast_reply(
+        text,
+        on_bubble=on_bubble,
+        api_key=cfg.minimax_api_key,
+        soul=cfg.soul,
+        base_url=cfg.minimax_base_url,
+        model=cfg.minimax_model,
+        timeout=cfg.fast_probe_timeout,
+        medium=cfg.medium_lane_enabled,
+        think_timeout=cfg.medium_timeout,
+        think_max_tokens=cfg.medium_max_tokens,
+        history=history,
+        max_chars=cfg.bubble_max_chars,
+        max_bubbles=cfg.bubble_max_count,
+    )
+
+
+class _NullTyping:
+    """No-op typing handle (typing disabled / module unavailable / no target)."""
+
+    def poke(self) -> None:  # pragma: no cover - trivial
+        pass
+
+    def stop(self) -> None:  # pragma: no cover - trivial
+        pass
+
+
+_NULL_TYPING = _NullTyping()
+
+
+def _make_typing(sendblue: Any, cfg: WorkerConfig, target: str):
+    """Build + start a TypingKeepalive, or a no-op handle when disabled."""
+    if not (cfg.typing_enabled and TypingKeepalive is not None and target):
+        return _NULL_TYPING
+    try:
+        return TypingKeepalive(
+            sendblue, target, interval=cfg.typing_interval,
+            max_duration_ms=cfg.typing_max_duration_ms, enabled=True,
+        ).start()
+    except Exception:  # pragma: no cover - typing must never break the reply
+        log.debug("typing keepalive failed to start for %s", target, exc_info=True)
+        return _NULL_TYPING
+
+
+class _BubbleEmitter:
+    """Send a reply as one or more paced iMessage bubbles to the operator.
+
+    `stream_sink(bubble)` is the streaming fast lane's on_bubble sink: send a
+    single already-split bubble NOW, with NO pacing (paragraphs are naturally
+    spaced by generation, and a sleep here would block the read loop). `send_text(text)`
+    splits text into Poke-style bubbles then sends each paced cfg.bubble_delay apart
+    (Hermes / non-streaming paths, where bubbles are produced all at once). Sends are
+    BEST-EFFORT — a Sendblue failure is logged, never raised, so it can't kill the loop.
+    Order is safe in both paths: sends are sequential + blocking, so Sendblue receives
+    bubbles in order regardless of the gap. The typing indicator is re-poked after each
+    send so the next bubble shows "…".
+    """
+
+    def __init__(self, sendblue: Any, target: str, cfg: WorkerConfig, *, typing: Any = None, sleep_fn: Callable[[float], None] = time.sleep):
+        self._sb = sendblue
+        self._target = target
+        self._cfg = cfg
+        self._typing = typing
+        self._sleep = sleep_fn
+        self.count = 0
+        self.first_at: Optional[float] = None  # monotonic of the first successful send (TTFB)
+
+    def _send(self, bubble: str, *, pace: bool) -> None:
+        text = (bubble or "").strip()
+        if not text:
+            return
+        # Pacing is ONLY for the batch path (bubbles produced all at once) — a small
+        # human gap. The STREAMING path must NOT pace: paragraphs are naturally
+        # spaced by generation, and a sleep here would BLOCK the read loop and delay
+        # the next bubble. Order is safe either way: sends are sequential + blocking,
+        # so Sendblue receives them in order regardless of the gap.
+        if pace and self.count > 0 and self._cfg.bubble_delay > 0:
+            try:
+                self._sleep(self._cfg.bubble_delay)
+            except Exception:
+                pass
+        try:
+            self._sb.send_message(to_number=self._target, content=text[:MAX_REPLY_CHARS])
+            if self.first_at is None:
+                self.first_at = time.monotonic()
+        except Exception:
+            log.exception("sendblue reply failed (bubble %d) for %s", self.count, self._target)
+        self.count += 1
+        if self._typing is not None:
+            self._typing.poke()
+
+    def stream_sink(self, bubble: str) -> None:
+        """on_bubble sink for the streaming fast lane — send now, no pacing."""
+        self._send(bubble, pace=False)
+
+    def send_text(self, text: str) -> int:
+        body = text if (text or "").strip() else ERROR_REPLY
+        if self._cfg.multi_bubble_enabled:
+            bubbles = split_into_bubbles(
+                body, max_bubbles=self._cfg.bubble_max_count, max_chars=self._cfg.bubble_max_chars
+            )
+            if was_truncated(bubbles):
+                log.warning("reply for %s exceeded bubble budget; tail truncated", self._target)
+        else:
+            bubbles = [body.strip()]
+        for b in (bubbles or [body.strip()]):
+            self._send(b, pace=True)
+        return self.count
+
+
+def _use_streaming(cfg: WorkerConfig) -> bool:
+    """Production streaming requires the flag, multi-bubble, and an available module."""
+    return cfg.streaming_enabled and cfg.multi_bubble_enabled and stream_fast_reply is not None
+
+
+def _safe_fast_reply(text: str, cfg: WorkerConfig, history: Optional[list], mid: str) -> Optional[str]:
+    """Non-streaming fast lane, swallowing errors to a defer (None)."""
+    try:
+        return _run_fast_lane(text, cfg, history)
+    except Exception:  # a fast-lane failure is NON-fatal: defer to Hermes
+        log.exception("fast lane error for %s; deferring to hermes", mid)
+        return None
+
+
+def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str, emitter: "_BubbleEmitter") -> bool:
+    """Non-streaming completion guard: complete in Convex, THEN send the bubbles.
+
+    A transient Convex `complete` failure degrades to `messages:fail` (terminal
+    state, no stranded "processing" row) + a friendly ERROR reply — exactly the
+    pre-streaming semantics. Returns True (the message is handled).
+    """
+    try:
+        convex.mutation(
+            "messages:complete",
+            {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
+        )
+    except Exception as e:
+        log.exception("fast-lane complete failed for %s; marking failed", mid)
+        try:
+            convex.mutation(
+                "messages:fail",
+                {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
+            )
+        except Exception:
+            log.exception("fail mutation also failed for %s", mid)
+        emitter.send_text(ERROR_REPLY)
+        return True
+    emitter.send_text(reply)
+    return True
+
+
+def _complete_after_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str) -> None:
+    """Streaming completion: bubbles ALREADY sent, so just record the outcome.
+
+    On a Convex `complete` failure the user already has the answer — we must NOT
+    send a second ERROR reply; we only mark `fail` so the row isn't stuck in
+    "processing" (no reaper exists).
+    """
+    try:
+        convex.mutation(
+            "messages:complete",
+            {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
+        )
+    except Exception as e:
+        log.exception("streaming complete failed for %s (reply already sent); marking failed", mid)
+        try:
+            convex.mutation(
+                "messages:fail",
+                {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
+            )
+        except Exception:
+            log.exception("fail mutation also failed for %s", mid)
+
+
 def process_one(
     convex: Any,
     sendblue: Any,
@@ -263,21 +490,25 @@ def process_one(
     *,
     run_fn: Callable[..., str] = run_hermes,
     fast_fn: Optional[Callable[[str], Optional[str]]] = None,
+    sleep_fn: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Claim and process at most one queued message.
 
     Returns True if a message was claimed and handled (so the caller should poll
     again immediately), False if the queue was empty (caller should back off).
-    Never raises for a per-message failure — Hermes errors are caught, the
-    message is marked failed, and the user gets a friendly reply.
+    Never raises for a per-message failure — errors are caught, the message is
+    marked failed, and the user gets a friendly reply.
 
-    Latency: the FAST LANE is tried first (one slim MiniMax-M3 call, no tools,
-    reasoning off) for messages that need no tools. On a real answer the message
-    completes in ~1.5-3s without ever cold-starting Hermes. On a deferral (None)
-    or ANY fast-lane error, it falls back to the unchanged Hermes path — so heavy
-    work is never broken by the optimization. NOTE: a deferred message pays the
-    fast-lane probe (≤ cfg.fast_probe_timeout) BEFORE the Hermes turn; the probe
-    timeout is kept tight so that tail stays small.
+    Pipeline (latency-optimized):
+      1. Claim -> start the TYPING indicator immediately (user sees "…" in ~200ms).
+      2. FAST LANE first (no tools, reasoning off). In production this STREAMS:
+         Poke-style bubbles are sent as each paragraph completes, and a defer
+         verdict is detected from the first tokens (<1s) — so the Hermes hand-off
+         starts sooner. On a real answer the message completes without ever
+         cold-starting Hermes; on a deferral / error it falls back to Hermes.
+      3. Heavy lane (Hermes) reply is split into bubbles and sent.
+      4. Stop the typing indicator. Replies always go to the config operator
+         number, never the inbound payload.
     """
     claimed = convex.mutation("messages:claimNext", {"workerSecret": cfg.worker_secret})
     if not claimed:
@@ -288,78 +519,92 @@ def process_one(
     user_number = claimed.get("userNumber") or ""
     started = time.monotonic()
     lane = "hermes"  # updated to "fastlane" if the fast lane answers
+    history: list = []
 
-    # Conversation memory: prior turns for this user (best-effort, [] on any error).
-    history = _fetch_history(convex, cfg, user_number)
+    typing = _make_typing(sendblue, cfg, cfg.reply_target)
+    emitter = _BubbleEmitter(sendblue, cfg.reply_target, cfg, typing=typing, sleep_fn=sleep_fn)
+    t_hist = started  # stamp set after history fetch (stage timing)
+    try:
+        # Conversation memory: prior turns for this user (best-effort, [] on error).
+        history = _fetch_history(convex, cfg, user_number)
+        t_hist = time.monotonic()
 
-    # --- Fast lane (answer-or-defer) ---------------------------------------
-    reply: Optional[str] = None
-    completed = False
-    if _fast_lane_allowed(cfg, text, fast_fn):
-        try:
-            reply = fast_fn(text) if fast_fn is not None else _run_fast_lane(text, cfg, history)
-        except Exception:  # a fast-lane failure is NON-fatal: defer to Hermes
-            log.exception("fast lane error for %s; deferring to hermes", mid)
-            reply = None
-        if reply is not None:
-            # Guard the completion just like the heavy lane: a transient Convex
-            # failure here must degrade to `messages:fail` (terminal state +
-            # friendly reply), NOT propagate and strand the message in
-            # "processing" forever (no reaper exists). Do NOT re-run Hermes after
-            # a successful answer — that would double-reply.
+        reply: Optional[str] = None
+        completed = False
+
+        if _fast_lane_allowed(cfg, text, fast_fn):
+            if fast_fn is not None:
+                # Injected (tests / explicit non-stream): answer-or-defer, then
+                # complete-THEN-send (preserves the original guard semantics).
+                try:
+                    full = fast_fn(text)
+                except Exception:
+                    log.exception("fast lane error for %s; deferring to hermes", mid)
+                    full = None
+                if full is not None:
+                    reply, lane = full, "fastlane"
+                    completed = _complete_then_send(convex, cfg, mid, full, emitter)
+            elif _use_streaming(cfg):
+                # Production streaming: bubbles are sent AS generated; complete
+                # AFTER (the user already has the answer).
+                try:
+                    res = _run_stream_fast_lane(text, cfg, history, emitter.stream_sink)
+                except Exception:
+                    log.exception("streaming fast lane crashed for %s; deferring", mid)
+                    res = None
+                if res is not None and res.emitted > 0:
+                    reply, lane, completed = res.reply, "fastlane", True
+                    _complete_after_send(convex, cfg, mid, reply or "")
+                elif res is not None and res.errored and emitter.count == 0:
+                    # transport error, nothing sent yet: cheap non-stream retry.
+                    full = _safe_fast_reply(text, cfg, history, mid)
+                    if full is not None:
+                        reply, lane = full, "fastlane"
+                        completed = _complete_then_send(convex, cfg, mid, full, emitter)
+                # else: deferred -> Hermes
+            else:
+                # streaming disabled/unavailable: non-streaming fast lane + batch send.
+                full = _safe_fast_reply(text, cfg, history, mid)
+                if full is not None:
+                    reply, lane = full, "fastlane"
+                    completed = _complete_then_send(convex, cfg, mid, full, emitter)
+
+        if not completed:
+            # --- Heavy lane: full Hermes ---------------------------------------
             try:
+                reply = run_fn(
+                    text,
+                    hermes_home=cfg.hermes_home,
+                    hermes_dir=cfg.hermes_dir,
+                    python_bin=cfg.python_bin,
+                    timeout=cfg.hermes_timeout,
+                    history=history,
+                )
                 convex.mutation(
                     "messages:complete",
                     {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
                 )
-            except Exception as e:
-                log.exception("fast-lane complete failed for %s; marking failed", mid)
+                emitter.send_text(reply or ERROR_REPLY)
+            except Exception as e:  # per-message failure must not kill the loop
+                log.exception("hermes failed for message %s", mid)
                 reply = ERROR_REPLY
-                try:
-                    convex.mutation(
-                        "messages:fail",
-                        {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
-                    )
-                except Exception:
-                    log.exception("fail mutation also failed for %s", mid)
-            completed = True
-            lane = "fastlane"
+                convex.mutation(
+                    "messages:fail",
+                    {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
+                )
+                emitter.send_text(ERROR_REPLY)
+    finally:
+        typing.stop()
 
-    # --- Heavy lane: full Hermes (unchanged except conversation memory) -----
-    if not completed:
-        try:
-            reply = run_fn(
-                text,
-                hermes_home=cfg.hermes_home,
-                hermes_dir=cfg.hermes_dir,
-                python_bin=cfg.python_bin,
-                timeout=cfg.hermes_timeout,
-                history=history,
-            )
-            convex.mutation(
-                "messages:complete",
-                {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
-            )
-        except Exception as e:  # per-message failure must not kill the loop
-            log.exception("hermes failed for message %s", mid)
-            reply = ERROR_REPLY
-            convex.mutation(
-                "messages:fail",
-                {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
-            )
-
-    # Reply target is ALWAYS the config operator number, never the payload.
-    try:
-        sendblue.send_message(to_number=cfg.reply_target, content=(reply or ERROR_REPLY)[:MAX_REPLY_CHARS])
-    except Exception:
-        log.exception("sendblue reply failed for message %s", mid)
-
-    # Observability: which lane answered + end-to-end processing latency, per
-    # message. Previously the worker logged only failures, so we were blind to
-    # whether the fast lane was even firing in production.
+    # Observability: lane, bubble count, history depth, end-to-end latency, and the
+    # stage breakdown — ttfb (claim -> FIRST bubble on the wire = perceived latency),
+    # hist (history-fetch cost). ttfb is the number that matters for "feels fast".
+    now = time.monotonic()
+    ttfb = (emitter.first_at - started) if emitter.first_at is not None else None
     log.info(
-        "processed %s lane=%s history=%d in_chars=%d dt=%.2fs",
-        mid, lane, len(history), len(text or ""), time.monotonic() - started,
+        "processed %s lane=%s bubbles=%d history=%d in_chars=%d hist=%.2fs ttfb=%s dt=%.2fs",
+        mid, lane, emitter.count, len(history), len(text or ""),
+        t_hist - started, ("%.2fs" % ttfb) if ttfb is not None else "n/a", now - started,
     )
     return True
 

@@ -14,7 +14,7 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"           # lab/skeleton (repo)
 DEST="$HOME/.hermes-savedlab/worker"
-MODULES=(worker.py convex_client.py sendblue_client.py hermes_bridge.py fast_lane.py)
+MODULES=(worker.py convex_client.py sendblue_client.py hermes_bridge.py fast_lane.py bubbles.py typing_indicator.py)
 
 echo "deploy: $SRC -> $DEST"
 mkdir -p "$DEST"
