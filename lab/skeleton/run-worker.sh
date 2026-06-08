@@ -16,7 +16,8 @@ set -a; . "$HOME/.hermes-savedlab/.env"; set +a
 export HERMES_HOME="$HOME/.hermes-savedlab"
 export HERMES_DIR="${HERMES_DIR:-$HOME/hermes-agent}"
 export HERMES_PYTHON_BIN="${HERMES_PYTHON_BIN:-$HOME/hermes-agent/venv/bin/python}"
-export POLL_INTERVAL="${POLL_INTERVAL:-2.0}"
+export POLL_INTERVAL="${POLL_INTERVAL:-0.5}"          # active pickup
+export IDLE_POLL_INTERVAL="${IDLE_POLL_INTERVAL:-3.0}" # back off when idle
 export HERMES_TIMEOUT="${HERMES_TIMEOUT:-220}"
 export COMPOSIO_USER_ID="${COMPOSIO_USER_ID:-$ALLOWED_USER_NUMBER}"
 

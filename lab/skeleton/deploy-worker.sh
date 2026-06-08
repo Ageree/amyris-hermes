@@ -14,13 +14,17 @@ set -euo pipefail
 
 SRC="$(cd "$(dirname "$0")" && pwd)"           # lab/skeleton (repo)
 DEST="$HOME/.hermes-savedlab/worker"
-MODULES=(worker.py convex_client.py sendblue_client.py hermes_bridge.py)
+MODULES=(worker.py convex_client.py sendblue_client.py hermes_bridge.py fast_lane.py)
 
 echo "deploy: $SRC -> $DEST"
 mkdir -p "$DEST"
 for m in "${MODULES[@]}"; do
   cp "$SRC/$m" "$DEST/$m"
 done
+
+# SOUL.md — the fast lane reads it for the assistant's voice. Copied beside the
+# worker so _load_soul() finds it with no HERMES_HOME lookup.
+cp "$SRC/../personality/SOUL.md" "$DEST/SOUL.md"
 
 # Composio client (worker imports it for intent polling) + the connections skill
 # scripts (so they're available to the deployed worker's Hermes via the skill dir).
@@ -45,7 +49,8 @@ set -a; . "$HOME/.hermes-savedlab/.env"; set +a
 export HERMES_HOME="$HOME/.hermes-savedlab"
 export HERMES_DIR="${HERMES_DIR:-$HOME/hermes-agent}"
 export HERMES_PYTHON_BIN="${HERMES_PYTHON_BIN:-$HOME/hermes-agent/venv/bin/python}"
-export POLL_INTERVAL="${POLL_INTERVAL:-2.0}"
+export POLL_INTERVAL="${POLL_INTERVAL:-0.5}"
+export IDLE_POLL_INTERVAL="${IDLE_POLL_INTERVAL:-3.0}"
 export HERMES_TIMEOUT="${HERMES_TIMEOUT:-220}"
 export COMPOSIO_USER_ID="${COMPOSIO_USER_ID:-$ALLOWED_USER_NUMBER}"
 : "${CONVEX_URL:?set CONVEX_URL in ~/.hermes-savedlab/.env}"
