@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development or superpowers:executing-plans. This plan is grounded in measured Phase-0 constants (see `lab/REPORT.md`). Some early tasks contain DECISIONS that need the operator's input — marked `DECIDE`.
 
-**Goal:** Turn the validated single-user lab into a multi-tenant product: a Sendblue iMessage number → TS/Convex router + control plane → a fleet of per-user Hermes containers (24/7) on GCP → MiniMax-M2.7, with real Instagram resolution and freemium quotas.
+**Goal:** Turn the validated single-user lab into a multi-tenant product: a Sendblue iMessage number → TS/Convex router + control plane → a fleet of per-user Hermes containers (24/7) on GCP → MiniMax-M3, with real Instagram resolution and freemium quotas.
 
-**Architecture (locked in design doc):** one service number (Sendblue) → router/control plane (users, billing, quotas, TCPA, suppression) → fleet orchestrator launching one Hermes container per user on shared GCE VMs → MiniMax-M2.7. Convex is the control plane only (cannot live inside Hermes — SQLite/files hardwired). The container image extends the Phase-0 `resolver-core` (already building in Artifact Registry: `us-central1-docker.pkg.dev/hermes-saved-content-lab/saved-content/resolver-core:lab`).
+**Architecture (locked in design doc):** one service number (Sendblue) → router/control plane (users, billing, quotas, TCPA, suppression) → fleet orchestrator launching one Hermes container per user on shared GCE VMs → MiniMax-M3. Convex is the control plane only (cannot live inside Hermes — SQLite/files hardwired). The container image extends the Phase-0 `resolver-core` (already building in Artifact Registry: `us-central1-docker.pkg.dev/hermes-saved-content-lab/saved-content/resolver-core:lab`).
 
 **Measured Phase-0 constants feeding this plan (from `lab/REPORT.md`):**
 - RAM ≈ 290 MB (CLI) / est. 350–500 MB (persistent gateway) per instance → **~50–60 users / 32 GB host** (beats SC-008 target of 30). Re-measure the real gateway before committing density.
@@ -26,7 +26,7 @@
 ## Milestone A — Fleet container (extends resolver-core)
 
 **A1. Fix `library.py` DB isolation (fleet-critical).** Default DB must be `$HERMES_HOME/saved-content/items.json` (not hardcoded `~/.hermes`). TDD: test that with `HERMES_HOME=/x` the default db path is `/x/saved-content/items.json`; keep `--db` override. (Latent bug found in Phase-0 e2e.)
-**A2. Full fleet image.** Layer Hermes Agent onto the resolver-core Dockerfile: pin Hermes v0.11.0, install the saved-content skill at `$HERMES_HOME/skills/saved-content`, MiniMax-M2.7 provider config, IG resolver creds via env. Build via the existing cloudbuild pipeline.
+**A2. Full fleet image.** Layer Hermes Agent onto the resolver-core Dockerfile: pin Hermes v0.11.0, install the saved-content skill at `$HERMES_HOME/skills/saved-content`, MiniMax-M3 provider config, IG resolver creds via env. Build via the existing cloudbuild pipeline.
 **A3. Per-container config contract.** Each container gets: `HERMES_HOME` (its own volume), user id, MiniMax key, IG resolver key, and the Sendblue/router callback URL. Document the env contract.
 **A4. IG resolver integration.** Add an `_instagram` path to resolve.py using the DECIDE-1 vendor (replace the yt-dlp IG attempt that hits the login wall). TDD with mocked vendor responses; one live smoke. Measure per-IG-resolve cost + success rate on real reels/carousels.
 

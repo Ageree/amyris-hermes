@@ -26,7 +26,7 @@ verified by WebSearch/WebFetch at research time.
 
 ### OpenClaw (MIT, 377K★) — pattern source, not foundation
 - 20+ channels; iMessage via bundled `imsg` CLI on a signed-in Mac (JSON-RPC/stdio).
-- Model-agnostic incl. MiniMax M2/M2.7. Memory: JSONL/Markdown.
+- Model-agnostic incl. MiniMax M2/M3. Memory: JSONL/Markdown.
 - **Single-operator by design; multi-tenancy on roadmap only. Severe prompt-injection
   findings (91.3% injection success per ZeroLeaks).** Use patterns (gateway/agent split,
   channel adapters), not the codebase.
@@ -72,18 +72,18 @@ verified by WebSearch/WebFetch at research time.
 - Karakeep/cobalt internals confirm: monolith+readability+yt-dlp pattern works.
 
 ### Models — VERIFIED facts
-- **MiniMax M2.7** (current flagship): natively multimodal **text+image+VIDEO input**
+- **MiniMax M3** (launched Jun 1, 2026): natively multimodal **text+image+VIDEO input**
   (no audio in), 1M context, OpenAI-compatible endpoint api.minimax.io/v1,
   $0.60/$2.40 per M (promo $0.30/$1.20 to ~Jun 8), cached input $0.06/M.
   SWE-Bench Pro 59.0, Terminal-Bench 2.1 66.0 (vendor-reported). ~100 tok/s.
 - **Max-Hermes / MiniMax Agent**: consumer products, NO embeddable API → build agent
-  loop ourselves on M2.7 API.
+  loop ourselves on M3 API.
 - **Video fallback**: Gemini Flash video API ~263 tok/s default res → <1¢ per 60s reel.
 - ASR: Whisper/faster-whisper (MiniMax has no ASR).
 
 ### Agent layer
 - **Vercel AI SDK 6**: recommended. Built-in tool-approval HITL (pause/approve/deny),
-  MiniMax community provider + AI Gateway minimax/MiniMax-M2.7. Mastra = alternative
+  MiniMax community provider + AI Gateway minimax/minimax-m3. Mastra = alternative
   (suspend/resume, memory, evals). LangGraph = heavier.
 - **Composio**: hosted auth Connect Links (`connectedAccounts.link()` — NOT deprecated
   `initiate()`); free 20k calls/mo, $29/mo 200k. Has Google Calendar/Gmail/Notion.
@@ -102,7 +102,7 @@ verified by WebSearch/WebFetch at research time.
 
 ### Economics
 - Per active user/month (60 items + 120 chat turns + 20 agent runs ≈ 3.16M in / 216k out):
-  M2.7 std **$2.41**, GPT-5-mini $1.22, Gemini Flash $1.49; with caching → ~$1–1.5.
+  M3 std **$2.41**, GPT-5-mini $1.22, Gemini Flash $1.49; with caching → ~$1–1.5.
 - **$9–13/mo sub = 80%+ gross margin. Viable.**
 - **Free-tier rotation: dev/prototyping only.** OpenRouter limits are global per-user
   (key rotation useless); Mistral free trains on data; proxy pools (zukijourney) violate

@@ -45,7 +45,7 @@ persistence. Registry pattern everywhere (tools/providers/plugins/adapters).
 ### Providers / MiniMax
 - MiniMax first-class: `minimax` (API key, default base https://api.minimax.io/anthropic
   — Anthropic-compatible), `minimax-cn`, `minimax-oauth` (consumer PKCE login,
-  NO API key/card — dogfood-friendly; docs reference M2.7 = pass model string).
+  NO API key/card — dogfood-friendly; docs reference M2.7, M3 = pass model string).
 - Credential pools (rotation on 429/402/401, strategies, cooldowns) + cross-provider
   fallback chains + 11 auxiliary model slots (route vision/compression/titles to
   cheap models). Always-on prompt caching.

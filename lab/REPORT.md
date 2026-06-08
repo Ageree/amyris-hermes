@@ -1,14 +1,16 @@
 # Phase 0 Exit Report — Saved-Content Lab
 
 **Run:** 2026-06-08 (autonomous overnight session; operator asleep, full autonomy granted)
-**Environment:** Hermes Agent v0.11.0, isolated `HERMES_HOME=~/.hermes-savedlab`, MiniMax-M2.7 via `api.minimax.io/v1` (operator's funded key), saved-content skill v0.1.
+**Environment:** Hermes Agent v0.11.0, isolated `HERMES_HOME=~/.hermes-savedlab`, **MiniMax-M3** (frontier multimodal, 1M context) via `api.minimax.io/v1` (operator's funded key), saved-content skill v0.1.
+
+> **Correction (2026-06-08):** an earlier pass in this report wrongly claimed "M3 does not exist" and downgraded the model to M2.7. **MiniMax-M3 is real and is the frontier multimodal model** — confirmed by direct API test (HTTP 200, `"model":"MiniMax-M3"`, returns reasoning tokens; a bogus model name returns HTTP 400 "unknown model"). The core save→card→store loop was **re-validated end-to-end on M3** on 2026-06-08; M3's internal `<think>` reasoning does not disrupt the skill flow. M3 is the chosen model going forward (multimodal video-in is exactly what reel/TikTok understanding needs).
 
 > Scope note: the operator's 20 real bookmarks were not available during the run,
 > so the golden set is **synthetic public URLs** I selected. The full save→card→store
 > loop was validated end-to-end on real content; per-source resolution was probed
 > across all source types. Real SC-001 pass/fail still needs the operator's actual saves.
 
-## What was validated end-to-end (real M2.7, not mocks)
+## What was validated end-to-end (real M3, not mocks)
 
 | Feature | Spec | Result |
 |---|---|---|
@@ -23,11 +25,11 @@
   gateway will be somewhat higher, est. 350–500 MB).
 - **Base context per turn:** system prompt + tools + skill = **~5,737 tokens**. A text
   save turn ≈ **11–16k input + ~1k output tokens** (article capped at 20k chars ≈ 5k tok).
-- **Latency:** save ≈ 8–21 s/query (resolve + M2.7 reasoning). Within the 90 s SLA (SC-001).
+- **Latency:** save ≈ 8–21 s/query on M2.7; the M3 re-validation save ran ~66 s end-to-end (resolve + M3 reasoning + card + first-save cron). Within the 90 s SLA (SC-001); watch M3 reasoning-token latency on heavier inputs.
 
 ## Cost (SC-005) — estimated, not metered
 
-No metered console access this run (see "Issues"). Estimate at MiniMax-M2.7 list (~$0.30/M in, $1.20/M out):
+No metered console access this run (see "Issues"). Estimate at MiniMax-M3 promo (~$0.30/M in, $1.20/M out; list $0.60/$2.40, cached-in $0.06/M):
 - **Text save: ~$0.006/item.** Daily digest: ~$0.002.
 - **Video save (multimodal): higher** — video tokens dominate; est. $0.02–0.08/item depending on length.
 - **Per active user/mo** (≈60 saves + 30 digests + chat): **~$2–4** for text-heavy; pushes toward the
@@ -58,13 +60,11 @@ re-measured in the Phase-1 container.)
 2. `fix(lab): use full ${HERMES_SKILL_DIR}/scripts path in engagement commands`.
 3. `fix(lab): classify mobile.x.com as x` + `_fxtwitter rewrites mobile.x.com`.
 4. `feat(lab): yt-dlp impersonation with graceful fallback`.
-5. `docs: MiniMax-M3 → M2.7` (M3 does not exist; M2.7 is the current flagship).
+5. `docs: MiniMax-M3 → M2.7` (made during the run, **later reverted** — M3 is real and frontier; see Correction note up top).
 
 ## Known issues / operator actions
 
-- **The MiniMax API key you provided is empty (HTTP 402 insufficient balance).** The lab ran on
-  your *other* funded key from `~/.hermes/.env`. Top up the provided key (or designate which key
-  for the fleet), and consider rotating both — they're in the chat transcript.
+- **MiniMax keys (updated 2026-06-08):** the key you originally pasted now works and is funded (**$24 balance**, HTTP 200 against M3) — the M3 re-validation ran on it. Your *other* key in `~/.hermes/.env` is currently rate-capped (HTTP 429 "usage limit exceeded"). Designate one funded, metered key for the fleet. **Both keys are in the chat transcript — rotate them.**
 - **Telegram live e2e pending your one action:** a bot can't DM you first. DM the lab bot
   (`@`-the bot for token `8649699230:…`) once "привет", then the channel works. (Validated via CLI instead.)
 - **`library.py` defaults its DB to `~/.hermes/saved-content/` ignoring `HERMES_HOME`** — a latent
@@ -74,7 +74,7 @@ re-measured in the Phase-1 container.)
 ## VERDICT: **GO for Phase 1**
 
 The core product loop (save → understand → card → spaced resurfacing → digest with earned silence)
-works end-to-end on M2.7 and produces genuinely useful, on-tone output. Unit economics and RAM
+works end-to-end on M3 and produces genuinely useful, on-tone output. Unit economics and RAM
 density are within targets for text/article/X content. **Solve first in Phase 1, in order:**
 1. **Instagram resolution** (ScrapeCreators or Apify or cookie auth) — gates 99% of real usage.
 2. `library.py` `$HERMES_HOME` DB isolation (fleet correctness).

@@ -18,7 +18,7 @@ on a landing page, everything else happens in iMessage.
 ## 2. The one-sentence architecture
 
 **One service iMessage number → thin router → a fleet of always-on personal
-Hermes agents (one Docker container per user) on GCP → MiniMax M2.7 API (the current MiniMax flagship; earlier specs said "M3", which does not exist — M2.7 is the real latest model as of 2026-06).**
+Hermes agents (one Docker container per user) on GCP → MiniMax M3 API.**
 Control plane (users, billing, quotas, fleet map) = Convex + TypeScript.
 
 Each user gets a REAL personal agent: own memory, own self-improving skills,
@@ -37,7 +37,7 @@ iPhone user ──iMessage──▶ Sendblue (one service number)
       [container user A] [container user B]  … [container user N]
       Hermes agent: skills, memory, playbook, cron — 24/7
             │                │
-            └── MiniMax M2.7 API (our key; per-user budgets in Convex)
+            └── MiniMax M3 API (our key; per-user budgets in Convex)
             └── Composio (per-user connected accounts: Google Calendar/Gmail/Notion)
 ```
 
@@ -47,13 +47,13 @@ iPhone user ──iMessage──▶ Sendblue (one service number)
 - Base: Hermes Agent (MIT, github.com/NousResearch/hermes-agent) Docker image,
   pruned (no browser stack by default, no CN platforms), pinned version.
 - Provider: `minimax` (API key, Anthropic-compatible endpoint
-  `https://api.minimax.io/anthropic`, model string `MiniMax-M2.7`). Auxiliary model
+  `https://api.minimax.io/anthropic`, model string `MiniMax-M3`). Auxiliary model
   slots → cheaper model for titles/compression. Fallback chain → Gemini Flash.
 - **Saved-content skill** (ours, the core IP): triggers on any URL/media message:
   1. Resolve: IG → ScrapeCreators/Apify (primary) | yt-dlp+proxies (fallback);
      TikTok → yt-dlp; X → fxtwitter; YouTube → transcript-api/yt-dlp;
      articles → trafilatura/Jina. Runs via `terminal` tool inside the container.
-  2. Understand: video file/frames + caption → MiniMax M2.7 (native video input);
+  2. Understand: video file/frames + caption → MiniMax M3 (native video input);
      audio → whisper when speech matters. Output = **knowledge card**: суть,
      "how to apply to YOU" steps, category, entities, effort estimate.
   3. Store: card → agent memory + items.json in container volume; reply to user
@@ -126,7 +126,7 @@ iPhone user ──iMessage──▶ Sendblue (one service number)
 1. User shares reel → Messages → service number.
 2. Sendblue webhook → router: signature ✓, user ✓, quota ✓ → forward to
    container A.
-3. Hermes (user A): URL detected → saved-content skill → download → M2.7 video
+3. Hermes (user A): URL detected → saved-content skill → download → M3 video
    analysis → knowledge card → memory + resurfacing cron created.
 4. Reply: "Сохранил: рецепт пасты за 15 мин. Хочешь список покупок в субботу
    утром?" (suggestion, not action — actions go through drafts).
@@ -140,7 +140,7 @@ iPhone user ──iMessage──▶ Sendblue (one service number)
 - Container down: router health-check → restart; inbound queued (Convex) and
   replayed; user sees delayed reply, never silence (router fallback text after
   60 s: "разбираюсь, отвечу чуть позже").
-- LLM provider down: per-container fallback chain (M2.7 → Gemini Flash).
+- LLM provider down: per-container fallback chain (M3 → Gemini Flash).
 - Sendblue outage: incident banner skill — nothing we can do mid-outage;
   monitor + alert. (Long-term de-risk: Apple Messages for Business application.)
 - Budget runaway: per-user daily token budget in router; hard stop + notify.

@@ -3,7 +3,7 @@
 **Feature Branch**: `001-saved-content-agent`
 **Created**: 2026-06-07
 **Status**: Draft
-**Input**: User description: "Personal saved-content agent: fleet of per-user Hermes agents in iMessage, MiniMax M2.7 brain, Convex control plane, GCP hosting"
+**Input**: User description: "Personal saved-content agent: fleet of per-user Hermes agents in iMessage, MiniMax M3 brain, Convex control plane, GCP hosting"
 **Design doc**: `docs/superpowers/specs/2026-06-07-saved-content-agent-design.md` (architecture, stack decisions, rejected alternatives)
 
 ## Problem Statement
@@ -360,7 +360,7 @@ lift immediately; cancel → access persists till period end, then reverts.
 - The bridge's inbound webhook carries a recoverable clean URL for share-sheet
   posts — verified by a live test before Phase-1 build continues (Blooio is the
   tested fallback vendor).
-- Brain = MiniMax M2.7 API (the current MiniMax flagship; earlier specs said "M3", which does not exist — M2.7 is the real latest model as of 2026-06) (multimodal: text+image+video in), model-agnostic
+- Brain = MiniMax M3 API (multimodal: text+image+video in), model-agnostic
   seam retained (fallback Gemini Flash); per design doc.
 - Agent runtime = Hermes Agent (MIT) pinned at a known version, one container
   per user, on GCE VMs (operator's ~$300 trial credits cover Phases 0–1;
