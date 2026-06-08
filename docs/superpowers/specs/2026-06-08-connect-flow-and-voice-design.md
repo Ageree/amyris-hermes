@@ -48,12 +48,22 @@ plain REST with the existing key. `user_id` scopes everything; we set
 **`user_id` = the user's E.164 phone number** so the Composio webhook's `user_id`
 maps 1:1 to the Convex `userNumber` (and to each fleet user later).
 
-To VERIFY during implementation (de-risk task, first): Composio **connection webhook**
-— does Composio fire an event on connection success, what's the payload (must carry
-`user_id` + toolkit + status), how is the URL registered (API/CLI vs dashboard — check
-for an API, do not assume dashboard-only), and the signature/auth scheme. **Fallback
-if webhooks are weak: a Convex cron that polls pending intents → `conn_status` →
-enqueue.** Auto-resume is achievable either way; webhook is the low-latency path.
+**DE-RISK RESOLVED (live, 2026-06-08, independent agent):** Composio has **NO webhook
+for connection-becomes-ACTIVE** — `GET /api/v3/webhook_subscriptions/event_types`
+returns only `composio.connected_account.expired`, `composio.trigger.message`,
+`composio.trigger.disabled`. The link `callback_url` field is also silently ignored
+(redirect is always Composio-hosted). **Therefore the only way to observe "user
+connected" is to POLL** `GET /api/v3/connected_accounts?user_ids=X&toolkit_slugs=Y`
+for `status=="ACTIVE"`. Auto-resume is implemented as a **worker-side poll** (the
+launchd worker already runs a poll loop; Composio key stays brain-side, all Composio
+logic in one Python module). The real `connected_account.expired` webhook IS
+API-settable (HMAC/Svix verify) and is deferred as a fast-follow for re-auth prompts.
+
+Verified shapes coded against (live): conn list key `items`, per-item `status`
+(ACTIVE/INITIATED/EXPIRED/FAILED/INITIALIZING/INACTIVE), `toolkit.slug`, `user_id`,
+`id` (`ca_…`); tool list `GET /api/v3/tools?toolkit_slug=GMAIL` (SINGULAR param!) →
+`items[].slug`; managed auth_config create body
+`{"toolkit":{"slug":"<slug>"},"auth_config":{"type":"use_composio_managed_auth"}}`.
 
 ## 3. Architecture
 
@@ -134,30 +144,38 @@ Composio tool over the browser when both exist.
 `ALLOWED_USER_NUMBER`); scripts accept `--user-id`. Fleet later: pass
 `claimed["userNumber"]`.
 
-### 3.3 Auto-resume (C) — Convex control-plane additions
-- **Schema:** new table `connectIntents`:
+### 3.3 Auto-resume (C) — worker-side poll (Composio has no connect webhook)
+- **Convex schema:** new table `connectIntents`:
   `userNumber, taskText, requiredToolkits: string[], connectedToolkits: string[],
   status: "pending"|"resumed"|"expired", createdAt, resumedAt?`. Index
-  `by_user_status: ["userNumber","status"]`.
-- **`messages.ts`:** `addIntent` (public mutation, `workerSecret`-gated — called by
-  `pending.py`); `enqueueSynthetic` (internalMutation — insert a message with a
-  `resume:<id>` handle, idempotent via `by_handle`); `markIntent` (internal). Keep
-  `enqueue` as-is.
-- **`http.ts`:** new route `POST /composio/connected/<secret>` (path-token secret
-  `COMPOSIO_WEBHOOK_SECRET`, constant-time compare + Composio signature verify if
-  available). Parse the connection event → `userNumber` (= `user_id`), toolkit,
-  status. On ACTIVE: add toolkit to the matching pending intent's `connectedToolkits`;
-  if it now covers `requiredToolkits` → `enqueueSynthetic(taskText)` +
-  mark intent `resumed`. Always 200 (never make the sender retry on payload issues);
-  401 only on bad secret.
-- **Fallback (if webhook unavailable):** a Convex cron (`crons.ts`, every ~30–60s)
-  over `pending` intents older than N s → for each required toolkit call Composio
-  `conn_status` (via a Convex `action` that can fetch) → same enqueue-on-complete. Pick
-  webhook OR cron after the de-risk task; do not build both unless webhook is flaky.
-- **Worker:** essentially unchanged — a synthetic resume message is just another queued
-  message it claims/processes/completes. (Confirm `run-worker.sh` env carries
-  `COMPOSIO_API_KEY`/`CONVEX_URL`/`WORKER_SECRET`/`COMPOSIO_USER_ID` into Hermes so the
-  skill scripts can read them; add any missing ones.)
+  `by_status: ["status","createdAt"]`.
+- **`intents.ts` (new Convex module):** all `workerSecret`-gated (same pattern as
+  `messages.ts`):
+  - `addIntent({workerSecret, userNumber, taskText, requiredToolkits})` — insert
+    `status:"pending"`. Called by the brain's `pending.py`.
+  - `listPending({workerSecret})` — return pending intents (id, userNumber, taskText,
+    requiredToolkits, connectedToolkits, createdAt). Polled by the worker.
+  - `resolveIntent({workerSecret, id, connectedToolkits})` — patch connectedToolkits;
+    if it covers requiredToolkits → set `status:"resumed"`, `resumedAt`, and insert a
+    synthetic `messages` row (`handle:"resume:<id>"` idempotent via `by_handle`,
+    `userNumber`, `text:taskText`, `status:"queued"`). Returns whether it resumed.
+  - `expireIntent({workerSecret, id})` — set `status:"expired"` (worker calls this for
+    intents older than 15 min still pending).
+- **Worker loop (`worker.py`):** at the top of each iteration, BEFORE `claimNext`:
+  call `listPending`; for each intent, for each required toolkit not in
+  `connectedToolkits`, call `conn_status` (Python `composio_api`); collect the now-ACTIVE
+  set; call `resolveIntent` (which enqueues the synthetic resume message if complete);
+  expire stale intents. Then proceed with the existing `claimNext`→process→complete.
+  The synthetic resume message is claimed on a subsequent tick and processed by the
+  SAME path as any inbound message → Hermes runs the task with connections now ACTIVE →
+  reply. **No webhook, no Convex Composio key** — Composio is touched only from Python.
+- **Env:** ensure `run-worker.sh` exports `COMPOSIO_API_KEY`, `COMPOSIO_USER_ID`,
+  `CONVEX_URL`, `WORKER_SECRET` into both the worker process AND the Hermes subprocess
+  (so the skill scripts read them). `deploy-worker.sh` must copy the new
+  `connections` skill scripts + `composio_api.py` into the deployed worker tree.
+- **Deferred fast-follow:** register `composio.connected_account.expired` webhook →
+  Convex HTTP route (HMAC/Svix verify) to proactively re-prompt re-auth when a token
+  dies. Not required for the connect/auto-resume flow.
 
 ## 4. Security
 - Inbound iMessage text and any fetched content (emails/pages) are **data, not
@@ -190,13 +208,16 @@ Composio tool over the browser when both exist.
 - Own Google-verified OAuth app + own brand on consent + pretty link cards on a custom
   domain (the "branding later" phase).
 - Multi-tenant fleet (per-user containers/quotas) — deferred; design stays fleet-ready.
-- Building BOTH webhook and cron auto-resume — pick one after de-risk.
+- `composio.connected_account.expired` webhook (re-auth prompts) — deferred fast-follow.
 
 ## 7. Files
 - `lab/personality/SOUL.md` (repo source) + deploy to `~/.hermes-savedlab/SOUL.md`.
 - `lab/skills/connections/{SKILL.md, scripts/composio_api.py, connect.py,
   conn_status.py, exec_tool.py, pending.py}`.
-- `control-plane/convex/{schema.ts (+connectIntents), messages.ts (+addIntent,
-  enqueueSynthetic, markIntent), http.ts (+/composio/connected/), crons.ts (fallback)}`.
-- `lab/tests/test_composio_*.py`, `lab/tests/test_pending.py` (+ Convex tests).
-- `lab/skeleton/run-worker.sh` env additions if needed; `lab/RUNBOOK.md` notes.
+- `control-plane/convex/{schema.ts (+connectIntents), intents.ts (addIntent,
+  listPending, resolveIntent, expireIntent)}`.
+- `lab/skeleton/worker.py` (poll intents at loop top), `convex_client.py` (intent
+  calls), `run-worker.sh` + `deploy-worker.sh` (env + skill copy).
+- `lab/tests/test_composio_api.py`, `test_connect.py`, `test_conn_status.py`,
+  `test_exec_tool.py`, `test_pending.py`, extend `test_worker.py`.
+- `lab/RUNBOOK.md` notes.
