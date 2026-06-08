@@ -193,3 +193,40 @@ def test_from_env_raises_when_required_var_missing(monkeypatch):
         assert False, "expected KeyError"
     except KeyError:
         pass
+
+
+# ---- process_intents -----------------------------------------------------
+
+def test_process_intents_resolves_when_all_active():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "connections" / "scripts"))
+    import worker as w
+    cfg = _cfg()  # existing helper building a WorkerConfig; if absent, build inline
+    convex = MagicMock()
+    convex.query.return_value = [
+        {"id": "i1", "userNumber": "+111", "taskText": "t",
+         "requiredToolkits": ["gmail", "googlecalendar"], "connectedToolkits": [], "createdAt": 1.0},
+    ]
+    composio = MagicMock()
+    composio.connection_status.side_effect = lambda tk, user_id=None: "ACTIVE"
+    w.process_intents(convex, cfg, composio=composio, now=1000.0)
+    # reports both ACTIVE to resolveIntent
+    call = next(c for c in convex.mutation.call_args_list if c.args[0] == "intents:resolveIntent")
+    assert sorted(call.args[1]["connectedToolkits"]) == ["gmail", "googlecalendar"]
+
+
+def test_process_intents_expires_stale():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "connections" / "scripts"))
+    import worker as w
+    cfg = _cfg()
+    convex = MagicMock()
+    convex.query.return_value = [
+        {"id": "old", "userNumber": "+1", "taskText": "t", "requiredToolkits": ["gmail"],
+         "connectedToolkits": [], "createdAt": 0.0},
+    ]
+    composio = MagicMock(); composio.connection_status.return_value = "INITIATED"
+    w.process_intents(convex, cfg, composio=composio, now=10_000.0)  # > TTL
+    assert any(c.args[0] == "intents:expireIntent" for c in convex.mutation.call_args_list)

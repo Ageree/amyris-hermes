@@ -30,6 +30,18 @@ from convex_client import ConvexClient
 from hermes_bridge import run_hermes
 from sendblue_client import SendblueClient
 
+# composio_api lives in the connections skill scripts; reachable in the repo layout
+# (../skills/connections/scripts) and in the deployed worker tree (same dir as this file).
+import os as _os, sys as _sys
+for _cand in (_os.path.dirname(_os.path.abspath(__file__)),
+              _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "skills", "connections", "scripts")):
+    if _os.path.isdir(_cand) and _cand not in _sys.path:
+        _sys.path.insert(0, _cand)
+try:
+    from composio_api import ComposioClient
+except Exception:  # composio optional — worker still runs the queue without it
+    ComposioClient = None
+
 log = logging.getLogger("worker")
 
 MAX_REPLY_CHARS = 1800
@@ -50,6 +62,8 @@ class WorkerConfig:
     python_bin: str
     poll_interval: float = 2.0
     hermes_timeout: float = 180.0
+    composio_user_id: str = ""
+    intent_ttl: float = 3600.0  # 1 hour
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -72,6 +86,7 @@ class WorkerConfig:
             ),
             poll_interval=float(os.environ.get("POLL_INTERVAL", "2.0")),
             hermes_timeout=float(os.environ.get("HERMES_TIMEOUT", "180.0")),
+            composio_user_id=os.environ.get("COMPOSIO_USER_ID", os.environ.get("ALLOWED_USER_NUMBER", "")),
         )
 
 
@@ -124,12 +139,50 @@ def process_one(
     return True
 
 
+INTENT_POLL_EVERY = 5  # iterations between intent polls (with poll_interval=2s -> ~10s)
+
+
+def process_intents(convex: Any, cfg: WorkerConfig, *, composio: Optional[Any] = None, now: Optional[float] = None) -> None:
+    """Poll Composio status for pending intents; resolve (enqueue resume) or expire.
+
+    Never raises — a failure here must not kill the loop.
+    """
+    import time as _t
+    now = _t.time() if now is None else now
+    if composio is None:
+        if ComposioClient is None or not os.environ.get("COMPOSIO_API_KEY"):
+            return
+        composio = ComposioClient(user_id=cfg.composio_user_id)
+    try:
+        intents = convex.query("intents:listPending", {"workerSecret": cfg.worker_secret}) or []
+    except Exception:
+        log.exception("listPending failed")
+        return
+    for it in intents:
+        try:
+            if now - float(it.get("createdAt", now)) > cfg.intent_ttl:
+                convex.mutation("intents:expireIntent",
+                                {"workerSecret": cfg.worker_secret, "id": it["id"]})
+                continue
+            uid = it.get("userNumber") or cfg.composio_user_id
+            active = []
+            for tk in it.get("requiredToolkits", []):
+                if composio.connection_status(tk, user_id=uid) == "ACTIVE":
+                    active.append(tk)
+            convex.mutation("intents:resolveIntent", {
+                "workerSecret": cfg.worker_secret, "id": it["id"], "connectedToolkits": active,
+            })
+        except Exception:
+            log.exception("intent %s poll failed", it.get("id"))
+
+
 def run_loop(
     cfg: WorkerConfig,
     *,
     convex: Optional[Any] = None,
     sendblue: Optional[Any] = None,
     process_fn: Callable[..., bool] = process_one,
+    intent_fn: Optional[Callable[..., None]] = process_intents,
     sleep_fn: Callable[[float], None] = time.sleep,
     max_iterations: Optional[int] = None,
 ) -> None:
@@ -146,6 +199,8 @@ def run_loop(
     while max_iterations is None or i < max_iterations:
         i += 1
         try:
+            if intent_fn is not None and (i == 1 or i % INTENT_POLL_EVERY == 0):
+                intent_fn(convex, cfg)
             did = process_fn(convex, sendblue, cfg)
         except Exception:
             log.exception("worker iteration crashed")
