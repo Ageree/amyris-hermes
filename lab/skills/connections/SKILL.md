@@ -37,7 +37,7 @@ or check the catalog; otherwise fall back to the real browser (below).
    Then STOP. After the user taps and connects, the system auto-resumes this exact
    task by itself (you'll be re-invoked with the same request) — you do NOT need to
    ask them to come back.
-5. Doing the task: discover tools with `exec_tool.py --list <toolkit>`, then run
+5. Doing the task: discover tools with `python3 ${HERMES_SKILL_DIR}/scripts/exec_tool.py --list <toolkit>`, then run
    `python3 ${HERMES_SKILL_DIR}/scripts/exec_tool.py <SLUG> '<json args>'`.
    - if it returns `{"ok":false,"not_connected":true}`, the connection lapsed —
      go back to step 3 (send a fresh link).

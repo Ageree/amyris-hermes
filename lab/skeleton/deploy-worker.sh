@@ -24,7 +24,7 @@ done
 
 # Composio client (worker imports it for intent polling) + the connections skill
 # scripts (so they're available to the deployed worker's Hermes via the skill dir).
-CONN_SRC="$(cd "$SRC/../skills/connections/scripts" && pwd)"
+CONN_SRC="$(cd "$SRC/../skills/connections/scripts" && pwd)" || { echo "deploy: skills/connections/scripts not found" >&2; exit 1; }
 cp "$CONN_SRC/composio_api.py" "$DEST/composio_api.py"
 
 # Self-contained venv (the repo lab/.venv is under ~/Documents -> unreadable by
