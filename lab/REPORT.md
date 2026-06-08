@@ -149,3 +149,59 @@ own Convex account:
 
 **Still pending (carried over):** metered M3 $/turn capture; rotate the leaked
 MiniMax + Sendblue keys.
+
+## Connect-flow + lowercase voice + auto-resume (2026-06-08)
+
+Three features layered onto the live single-user assistant, built via
+subagent-driven-development (fresh implementer + spec-reviewer + code-quality
+reviewer per batch). Spec: `docs/superpowers/specs/2026-06-08-connect-flow-and-voice-design.md`;
+plan: `docs/superpowers/plans/2026-06-08-connect-flow-and-voice.md`.
+
+- **(A) lowercase voice** — Poke-style. Driven by `lab/personality/SOUL.md`
+  (prompt, not post-processing), with carve-outs that keep original case for
+  URLs, product/brand names (Gmail, Notion), code, and acronyms; plus
+  content-is-data and confirm-before-write/delete/spend rules.
+- **(B) tap-a-link OAuth via Composio** — when a task needs an account the user
+  hasn't connected, the agent replies (lowercase) with a Composio connect-link;
+  the user taps, consents on the provider's own screen, done. Managed-OAuth, so
+  no per-provider app setup for v1.
+- **(C) webhook → poll auto-resume** — Composio has **no** connect/became-active
+  webhook (only `connected_account.expired`; `callback_url` is ignored — verified
+  live), so resume is worker-side polling: the connect intent is recorded in
+  Convex *before* replying; the worker polls connection status and, once the
+  required toolkits are ACTIVE, enqueues a synthetic `resume:<id>` message so the
+  agent finishes the original task itself — no second message from the user.
+
+**Build status: complete, independently reviewed, deployed. 93 lab tests green.**
+- New REST client + scripts: `lab/skills/connections/scripts/{composio_api,connect,conn_status,exec_tool,pending}.py` + `SKILL.md`.
+- Control plane: `connectIntents` table + `intents.ts` (`addIntent` / `listPending` /
+  `resolveIntent` / `expireIntent`, all `WORKER_SECRET`-gated) — deployed to
+  `dev:zany-tapir-501` (`_generated/api.d.ts` regenerated).
+- Worker: `process_intents()` poll added to `worker.py` (runs at iter 1 then every
+  5 iters; never raises; expires intents older than `intent_ttl=3600s`); deploy
+  scripts ship `composio_api.py` + export `COMPOSIO_USER_ID`.
+
+**Proven live (real Composio + real Convex, standalone):**
+- Voice: full real path (synthetic inbound → Convex webhook → worker → Hermes
+  with new SOUL.md → reply) returned **all-lowercase**:
+  `«привет! всё ок, работаю. у тебя как? чем помочь?»` — stored `done`.
+- `conn_status.py gmail` → `{"ok":true,"toolkit":"gmail","status":"none"}`.
+- `connect.py gmail` → real link `https://connect.composio.dev/link/lk_KZ97F4wxRwN6`.
+- `pending.py add` → intent recorded in Convex; `listPending` confirmed 1 gmail
+  intent for `+79217818876`; wrong `WORKER_SECRET` rejected; stray test intent
+  expired afterward (cleanup).
+
+**BLOCKED — full Hermes-driven iMessage e2e + the auto-resume reply turn.**
+Both available LLM keys are out of balance: MiniMax `HTTP 402: insufficient
+balance (1008)`; ZAI `HTTP 429: "Insufficient balance or no resource package.
+Please recharge." (1113)`. The voice path above ran while MiniMax still had a few
+cents; it depleted mid-session. This is an external billing wall, not a code
+defect — every connect-flow script works standalone against live services.
+
+**Remaining operator actions:**
+1. **Fund/designate a working LLM key** (MiniMax-M3 top-up, or any funded model)
+   — unblocks the full iMessage e2e and the auto-resume reply.
+2. One-time **Google OAuth tap** on a fresh connect-link — the only permanent
+   human gate; proves auto-resume end to end.
+3. Carried over: rotate the leaked MiniMax + 2× Sendblue + Composio keys in
+   `~/.hermes-savedlab/.env`.
