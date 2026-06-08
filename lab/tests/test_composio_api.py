@@ -76,3 +76,17 @@ def test_missing_api_key_raises():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_ensure_auth_config_creates_managed_config_when_absent():
+    c = ca.ComposioClient(api_key="ak_x", user_id="+111")
+    with patch.object(ca.requests, "get") as g, patch.object(ca.requests, "post") as p:
+        g.return_value = _resp(200, {"items": []})
+        p.return_value = _resp(201, {"id": "ac_new"})
+        cid = c.ensure_auth_config("notion")
+    assert cid == "ac_new"
+    assert p.call_args.args[0].endswith("/api/v3/auth_configs")
+    assert p.call_args.kwargs["json"] == {
+        "toolkit": {"slug": "notion"},
+        "auth_config": {"type": "use_composio_managed_auth"},
+    }

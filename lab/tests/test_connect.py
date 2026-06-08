@@ -1,5 +1,5 @@
 # lab/tests/test_connect.py
-import json, sys, subprocess
+import json, sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -13,8 +13,9 @@ def test_main_prints_redirect_url(capsys):
     fake.create_link.return_value = {"redirect_url": "https://connect.composio.dev/link/lk_9",
                                      "connected_account_id": "ca_9", "expires_at": "2026"}
     with patch.object(connect, "ComposioClient", return_value=fake):
-        connect.main(["gmail", "--user-id", "+111"])
+        rc = connect.main(["gmail", "--user-id", "+111"])
     out = json.loads(capsys.readouterr().out)
+    assert rc == 0
     assert out["ok"] is True
     assert out["toolkit"] == "gmail"
     assert out["redirect_url"].startswith("https://connect.composio.dev/link/")

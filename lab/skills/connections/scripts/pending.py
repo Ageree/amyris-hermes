@@ -30,7 +30,7 @@ def main(argv=None) -> int:
         worker_secret = os.environ["WORKER_SECRET"]
         user_id = a.user_id or os.environ.get("COMPOSIO_USER_ID", "")
         if not user_id:
-            raise KeyError("user_id (pass --user-id or set COMPOSIO_USER_ID)")
+            raise ValueError("user_id required (pass --user-id or set COMPOSIO_USER_ID)")
         toolkits = [t.strip() for t in a.toolkits.split(",") if t.strip()]
         client = ConvexClient(convex_url)
         intent_id = client.mutation("intents:addIntent", {

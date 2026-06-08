@@ -51,7 +51,7 @@ class ComposioClient:
         except Exception:
             body = {}
         err = body.get("error") if isinstance(body, dict) else None
-        if err or not (200 <= r.status_code < 300):
+        if (isinstance(err, dict) and err) or not (200 <= r.status_code < 300):
             slug = (err or {}).get("slug", "") if isinstance(err, dict) else ""
             msg = (err or {}).get("message") if isinstance(err, dict) else None
             msg = msg or f"{method} {path} HTTP {r.status_code}: {str(getattr(r, 'text', ''))[:200]}"
@@ -76,7 +76,7 @@ class ComposioClient:
         return str(tk or "").lower()
 
     def find_auth_config(self, toolkit: str) -> Optional[str]:
-        body = self._get("/api/v3/auth_configs", {})
+        body = self._get("/api/v3/auth_configs", {"limit": 200})
         for it in body.get("items", []):
             if self._slug_of(it) == toolkit.lower():
                 return it.get("id")
