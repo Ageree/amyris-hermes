@@ -87,7 +87,9 @@ def test_run_fast_lane_passes_probe_timeout(monkeypatch):
 
 
 def test_fast_probe_timeout_default_is_tight():
-    assert _cfg_fast().fast_probe_timeout <= 8.0  # not the 20s requests default
+    # bounded well under the 20s requests default / 25s medium / 180s hermes, but
+    # generous enough that a normal longer answer finishes in-lane (see worker.py)
+    assert _cfg_fast().fast_probe_timeout <= 12.0
 
 
 # ---- Finding 3: adaptive polling ---------------------------------------------

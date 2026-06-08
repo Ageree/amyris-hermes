@@ -25,7 +25,9 @@ export default defineSchema({
     error: v.optional(v.string()),
   })
     .index("by_handle", ["handle"])
-    .index("by_status", ["status", "receivedAt"]),
+    .index("by_status", ["status", "receivedAt"])
+    // Conversation memory: fetch a user's recent turns (recentForUser).
+    .index("by_user", ["userNumber", "receivedAt"]),
 
   // Pending "connect intents": when the agent sends a connect-link for a task, it
   // records the original task + the toolkits it needs. The worker polls Composio

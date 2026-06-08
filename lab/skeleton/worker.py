@@ -123,12 +123,24 @@ class WorkerConfig:
     minimax_model: str = DEFAULT_MINIMAX_MODEL
     soul: str = ""
     fast_lane_enabled: bool = True
-    fast_probe_timeout: float = 6.0     # tight cap so a slow probe defers to Hermes fast
+    # Stage-1 probe answers directly OR emits a sentinel. Tool messages emit
+    # [[DEFER]] in ~2s (short output) regardless of this cap, so it only bounds the
+    # "M3 is generating a long direct answer" case. 6s was too tight: normal
+    # questions with a longer answer (e.g. "почему устал?") timed out and paid a
+    # full Hermes turn on top (~22s) to regenerate the SAME answer. 10s lets them
+    # finish in-lane (~7-9s); genuine tool-defers are unaffected.
+    fast_probe_timeout: float = 10.0
     # Medium lane: tool-free messages that need reasoning get a 2nd M3 call with
     # thinking ON (no tools) — faster than Hermes, better than a thinking-off answer.
     medium_lane_enabled: bool = True
     medium_timeout: float = 25.0        # thinking needs more headroom than the probe
     medium_max_tokens: int = 2048       # reasoning tokens count against this — keep generous
+    # Conversation MEMORY: prior turns for this user, fetched from Convex and
+    # spliced into the prompt so follow-ups ("я у тебя спросил") are understood
+    # in-lane instead of falling through to the slow stateless Hermes path.
+    history_enabled: bool = True
+    history_turns: int = 6              # how many recent done messages to recall
+    history_char_cap: int = 600         # cap each stored text/reply (avoid huge tool dumps)
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -160,10 +172,13 @@ class WorkerConfig:
             minimax_model=os.environ.get("MINIMAX_MODEL", DEFAULT_MINIMAX_MODEL),
             soul=_load_soul(),
             fast_lane_enabled=_env_flag("FAST_LANE_ENABLED", True),
-            fast_probe_timeout=float(os.environ.get("FAST_PROBE_TIMEOUT", "6.0")),
+            fast_probe_timeout=float(os.environ.get("FAST_PROBE_TIMEOUT", "10.0")),
             medium_lane_enabled=_env_flag("MEDIUM_LANE_ENABLED", True),
             medium_timeout=float(os.environ.get("MEDIUM_TIMEOUT", "25.0")),
             medium_max_tokens=int(os.environ.get("MEDIUM_MAX_TOKENS", "2048")),
+            history_enabled=_env_flag("HISTORY_ENABLED", True),
+            history_turns=int(os.environ.get("HISTORY_TURNS", "6")),
+            history_char_cap=int(os.environ.get("HISTORY_CHAR_CAP", "600")),
         )
 
 
@@ -187,12 +202,44 @@ def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]
     return bool(cfg.minimax_api_key) and fast_reply is not None
 
 
-def _run_fast_lane(text: str, cfg: WorkerConfig) -> Optional[str]:
+def _fetch_history(convex: Any, cfg: WorkerConfig, user_number: str) -> list:
+    """Recent (text, reply) turns for this user, as OpenAI {role, content} dicts.
+
+    Chronological (oldest first) so they read as a real transcript. Best-effort:
+    any Convex error -> [] (memory is an enhancement, never a hard dependency).
+    Skips turns missing text or reply and caps each string so an old huge tool
+    dump can't blow up the prompt.
+    """
+    if not cfg.history_enabled or not user_number:
+        return []
+    try:
+        rows = convex.query(
+            "messages:recentForUser",
+            {"workerSecret": cfg.worker_secret, "userNumber": user_number,
+             "limit": cfg.history_turns},
+        ) or []
+    except Exception:
+        log.exception("history fetch failed for %s", user_number)
+        return []
+    cap = cfg.history_char_cap
+    msgs: list = []
+    for r in rows:
+        text = (r.get("text") or "").strip()
+        reply = (r.get("reply") or "").strip()
+        if not text or not reply:
+            continue
+        msgs.append({"role": "user", "content": text[:cap]})
+        msgs.append({"role": "assistant", "content": reply[:cap]})
+    return msgs
+
+
+def _run_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list] = None) -> Optional[str]:
     """Production fast-lane call: one direct MiniMax-M3 turn, thinking disabled.
 
     Uses a TIGHT timeout (cfg.fast_probe_timeout) so a slow/hanging MiniMax probe
     falls back to Hermes quickly instead of stacking up to the 20s requests default
-    in front of the heavy path on a deferred message.
+    in front of the heavy path on a deferred message. `history` is prior turns for
+    conversational memory.
     """
     assert fast_reply is not None  # guaranteed by _fast_lane_allowed before we get here
     return fast_reply(
@@ -205,6 +252,7 @@ def _run_fast_lane(text: str, cfg: WorkerConfig) -> Optional[str]:
         medium=cfg.medium_lane_enabled,
         think_timeout=cfg.medium_timeout,
         think_max_tokens=cfg.medium_max_tokens,
+        history=history,
     )
 
 
@@ -237,13 +285,19 @@ def process_one(
 
     mid = claimed["id"]
     text = claimed["text"]
+    user_number = claimed.get("userNumber") or ""
+    started = time.monotonic()
+    lane = "hermes"  # updated to "fastlane" if the fast lane answers
+
+    # Conversation memory: prior turns for this user (best-effort, [] on any error).
+    history = _fetch_history(convex, cfg, user_number)
 
     # --- Fast lane (answer-or-defer) ---------------------------------------
     reply: Optional[str] = None
     completed = False
     if _fast_lane_allowed(cfg, text, fast_fn):
         try:
-            reply = fast_fn(text) if fast_fn is not None else _run_fast_lane(text, cfg)
+            reply = fast_fn(text) if fast_fn is not None else _run_fast_lane(text, cfg, history)
         except Exception:  # a fast-lane failure is NON-fatal: defer to Hermes
             log.exception("fast lane error for %s; deferring to hermes", mid)
             reply = None
@@ -269,8 +323,9 @@ def process_one(
                 except Exception:
                     log.exception("fail mutation also failed for %s", mid)
             completed = True
+            lane = "fastlane"
 
-    # --- Heavy lane: full Hermes (unchanged) -------------------------------
+    # --- Heavy lane: full Hermes (unchanged except conversation memory) -----
     if not completed:
         try:
             reply = run_fn(
@@ -279,6 +334,7 @@ def process_one(
                 hermes_dir=cfg.hermes_dir,
                 python_bin=cfg.python_bin,
                 timeout=cfg.hermes_timeout,
+                history=history,
             )
             convex.mutation(
                 "messages:complete",
@@ -298,6 +354,13 @@ def process_one(
     except Exception:
         log.exception("sendblue reply failed for message %s", mid)
 
+    # Observability: which lane answered + end-to-end processing latency, per
+    # message. Previously the worker logged only failures, so we were blind to
+    # whether the fast lane was even firing in production.
+    log.info(
+        "processed %s lane=%s history=%d in_chars=%d dt=%.2fs",
+        mid, lane, len(history), len(text or ""), time.monotonic() - started,
+    )
     return True
 
 

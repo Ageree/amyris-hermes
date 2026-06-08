@@ -72,6 +72,39 @@ export const fail = mutation({
   },
 });
 
+// Conversation memory: the worker fetches a user's recent completed turns and
+// splices them into the prompt so the (otherwise stateless) assistant can follow
+// a conversation. PII-gated by the worker secret. Returns chronological (oldest
+// first) {text, reply} pairs, skipping synthetic auto-resume / e2e messages and
+// any turn missing text or reply. Overfetches then trims because the status
+// filter + skips can drop rows.
+export const recentForUser = query({
+  args: {
+    workerSecret: v.string(),
+    userNumber: v.string(),
+    limit: v.number(),
+  },
+  handler: async (ctx, { workerSecret, userNumber, limit }) => {
+    assertWorker(workerSecret);
+    const n = Math.max(1, Math.min(20, Math.floor(limit)));
+    const rows = await ctx.db
+      .query("messages")
+      .withIndex("by_user", (q) => q.eq("userNumber", userNumber))
+      .order("desc")
+      .filter((q) => q.eq(q.field("status"), "done"))
+      .take(n * 3);
+    const out: { text: string; reply: string; receivedAt: number }[] = [];
+    for (const m of rows) {
+      if (m.handle.startsWith("resume:") || m.handle.startsWith("e2e")) continue;
+      if (!m.text || !m.reply) continue;
+      out.push({ text: m.text, reply: m.reply, receivedAt: m.receivedAt });
+      if (out.length >= n) break;
+    }
+    out.reverse(); // chronological: oldest first, so it reads as a transcript
+    return out;
+  },
+});
+
 // Operational read-only view (no PII gate needed for counts; gate full rows).
 export const stats = query({
   args: {},

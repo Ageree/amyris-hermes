@@ -140,19 +140,22 @@ def _strip(text: str) -> str:
 def _chat_once(
     message: str, *, api_key: str, soul: str, rules: str, think: bool,
     base_url: str, model: str, timeout: float, max_tokens: int, session: Any,
+    history: Optional[list] = None,
 ) -> Optional[str]:
     """One direct M3 chat call. Returns cleaned content, or None on error/empty.
 
     `think=False` sends `thinking:{type:disabled}` (the M3 kill-switch); `think=True`
-    omits it so M3 reasons (medium lane). Cache-friendly order: static system FIRST.
+    omits it so M3 reasons (medium lane). Cache-friendly order: static system FIRST,
+    then prior conversation turns (`history`), then the current user message LAST.
     """
     system = (soul.strip() + rules) if soul.strip() else rules.lstrip("\n-")
+    messages = [{"role": "system", "content": system}]   # static -> cache prefix
+    if history:
+        messages.extend(history)                          # prior turns (memory)
+    messages.append({"role": "user", "content": message})  # dynamic -> last
     body = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system},   # static -> cache prefix
-            {"role": "user", "content": message},     # dynamic -> last
-        ],
+        "messages": messages,
         "max_tokens": max_tokens,
     }
     if not think:
@@ -186,6 +189,7 @@ def fast_reply(
     medium: bool = True,
     think_timeout: float = 20.0,
     think_max_tokens: int = 2048,
+    history: Optional[list] = None,
 ) -> Optional[str]:
     """Route+answer `message`, or return None to defer to the full Hermes path.
 
@@ -194,6 +198,10 @@ def fast_reply(
     Stage 2 (medium lane, only on [[THINK]] and when `medium=True`): one more M3
     call with thinking ON but no tools — faster than Hermes, better quality than a
     thinking-off answer.
+
+    `history` is prior conversation turns (OpenAI {role, content} dicts) spliced
+    between the system prompt and the current message so follow-ups are answerable
+    in-lane instead of falling through to Hermes.
 
     Raises ValueError on an empty message or missing api_key (caller contract).
     Returns None — never raises — on any transport/model error or a deferral.
@@ -207,7 +215,8 @@ def fast_reply(
     # --- Stage 1: fast probe (thinking off, 3-way router) ---------------------
     out = _chat_once(
         message, api_key=api_key, soul=soul, rules=_ROUTER_RULES, think=False,
-        base_url=base_url, model=model, timeout=timeout, max_tokens=max_tokens, session=sess,
+        base_url=base_url, model=model, timeout=timeout, max_tokens=max_tokens,
+        session=sess, history=history,
     )
     if out is None or DEFER_SENTINEL in out:
         return None
@@ -218,7 +227,7 @@ def fast_reply(
         out2 = _chat_once(
             message, api_key=api_key, soul=soul, rules=_THINK_RULES, think=True,
             base_url=base_url, model=model, timeout=think_timeout,
-            max_tokens=think_max_tokens, session=sess,
+            max_tokens=think_max_tokens, session=sess, history=history,
         )
         if out2 is None or DEFER_SENTINEL in out2 or THINK_SENTINEL in out2 \
                 or _looks_like_capability_refusal(out2):

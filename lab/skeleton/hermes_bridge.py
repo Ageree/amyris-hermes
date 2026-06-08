@@ -28,6 +28,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from typing import Optional
 
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 # CSI / OSC ANSI escape sequences (colors, cursor moves, hyperlinks).
@@ -53,15 +54,41 @@ _APPROVAL = re.compile(
 )
 
 
+def _with_history(message: str, history: Optional[list]) -> str:
+    """Prepend a compact transcript of prior turns; the current message stays LAST.
+
+    Hermes is spawned fresh per message (stateless), so this is how it gets
+    conversational memory. The whole string becomes a SINGLE `--query=` token (see
+    the flag-smuggling note in run_hermes), so untrusted history/message text can
+    never become its own argv flag.
+    """
+    if not history:
+        return message
+    lines = ["recent conversation (for context, oldest first):"]
+    for turn in history:
+        role = turn.get("role") if isinstance(turn, dict) else None
+        content = (turn.get("content") if isinstance(turn, dict) else "") or ""
+        who = "you" if role == "assistant" else "user"
+        lines.append(f"{who}: {content}")
+    lines.append("\ncurrent message (reply to this):")
+    lines.append(message)
+    return "\n".join(lines)
+
+
 def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
-               python_bin: str, timeout: float = 180.0) -> str:
+               python_bin: str, timeout: float = 180.0,
+               history: Optional[list] = None) -> str:
     """Invoke headless Hermes for `message` and return the cleaned reply.
+
+    `history` (prior {role, content} turns) is prepended as context so the
+    otherwise-stateless Hermes subprocess can follow a conversation.
 
     Raises ValueError for an empty message and RuntimeError on a nonzero exit
     (which, in --quiet mode, reliably signals a failed turn).
     """
     if not message.strip():
         raise ValueError("empty message")
+    query = _with_history(message, history)
     env = {**os.environ, "HERMES_HOME": hermes_home}
     # SECURITY (argv flag smuggling): `message` is UNTRUSTED — it is the raw text
     # of an inbound iMessage and can be sent by any third party. cli.py uses
@@ -77,7 +104,7 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
     # (Edge case, deferred to P1B hardening: Fire literal-eval coerces a lone
     # numeric/bool/bracket token, e.g. "123" -> int; harmless, not a security issue.)
     proc = subprocess.run(
-        [python_bin, f"{hermes_dir}/cli.py", "--quiet", f"--query={message}"],
+        [python_bin, f"{hermes_dir}/cli.py", "--quiet", f"--query={query}"],
         cwd=hermes_dir,
         env=env,
         capture_output=True,
