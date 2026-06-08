@@ -191,17 +191,43 @@ plan: `docs/superpowers/plans/2026-06-08-connect-flow-and-voice.md`.
   intent for `+79217818876`; wrong `WORKER_SECRET` rejected; stray test intent
   expired afterward (cleanup).
 
-**BLOCKED — full Hermes-driven iMessage e2e + the auto-resume reply turn.**
-Both available LLM keys are out of balance: MiniMax `HTTP 402: insufficient
-balance (1008)`; ZAI `HTTP 429: "Insufficient balance or no resource package.
-Please recharge." (1113)`. The voice path above ran while MiniMax still had a few
-cents; it depleted mid-session. This is an external billing wall, not a code
-defect — every connect-flow script works standalone against live services.
+### FULL e2e UNBLOCKED + PROVEN — funded MiniMax Token Plan key (2026-06-08)
+
+The earlier blocker (both LLM keys out of balance) was cleared: the operator
+supplied a **MiniMax Token Plan key** (`sk-cp-` prefix). Per MiniMax docs the
+OpenAI-compatible endpoint Hermes already uses (`api.minimax.io/v1`, Bearer auth,
+model `MiniMax-M3`) supports Token Plan keys — confirmed with a direct probe
+(HTTP 200). Swapped `MINIMAX_API_KEY` in `~/.hermes-savedlab/.env` (chmod 600),
+restarted the launchd worker.
+
+**Proven live, real everything (funded key):**
+- **Hermes stack:** bridge `run_hermes("respond with exactly: pong")` → `pong`,
+  7.8 s, clean.
+- **Connect-flow (real agent, RU lowercase):** gmail request → reply
+  `«нужен доступ к gmail — тапни и я сразу всё проверю: https://connect.composio.dev/link/lk_imz5St8wDMKt»`,
+  delivered via the full webhook → durable queue → launchd worker → Sendblue path
+  (Convex row `queued→processing→done`).
+- **AUTO-RESUME end-to-end (no operator action needed — gmail was already
+  connected during testing, `connected_account ca_lLE2I3WK0E7w` ACTIVE):**
+  `process_intents` polled Composio, saw gmail ACTIVE, `resolveIntent` marked the
+  intent `resumed` and enqueued `resume:j97ex3f6…`; the worker processed it and
+  the agent **fetched real Gmail** via Composio `GMAIL_FETCH_EMAILS`, summarising
+  in lowercase RU (it even surfaced the Google "Composio got access" security
+  alert — proof the OAuth is real). The whole chain fired with zero human input.
+
+**Bug caught by this real e2e (units couldn't) → FIXED.** The first auto-resume
+reply leaked Hermes' tool-permission scaffolding — a `⚠️ DANGEROUS COMMAND`
+header, the echoed (multi-line) command, the `[o]nce/[s]ession/[d]eny` choices,
+and `✗ Denied` — glued in front of the real answer (the gate correctly denied a
+risky shell pipe; the agent recovered via `exec_tool.py`, but the prompt text
+reached the user). Fixed in `hermes_bridge.py` (`_APPROVAL` strips the whole
+block before `_NOTICE`); +2 regression tests; **95 lab tests green**; commit
+`eafa4fb`. Re-verified live: a fresh gmail-count request returned a clean reply
+(`«~42 непрочитанных треда…»`) with no scaffolding. Security unchanged — the deny
+still happens; this only cleans the reply text.
 
 **Remaining operator actions:**
-1. **Fund/designate a working LLM key** (MiniMax-M3 top-up, or any funded model)
-   — unblocks the full iMessage e2e and the auto-resume reply.
-2. One-time **Google OAuth tap** on a fresh connect-link — the only permanent
-   human gate; proves auto-resume end to end.
-3. Carried over: rotate the leaked MiniMax + 2× Sendblue + Composio keys in
-   `~/.hermes-savedlab/.env`.
+1. Rotate the leaked keys in `~/.hermes-savedlab/.env` — now **5**: MiniMax
+   (Token Plan `sk-cp-` key was pasted in chat), 2× Sendblue, Composio, and the
+   old MiniMax key.
+2. Metered M3 $/turn capture (carried over).
