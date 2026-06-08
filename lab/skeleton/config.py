@@ -15,6 +15,15 @@ class Config:
         self.sendblue_secret = os.environ["SENDBLUE_API_SECRET_KEY"]
         # the shared Sendblue number we send FROM
         self.sendblue_from = os.environ["SENDBLUE_FROM_NUMBER"]
+        # High-entropy URL path token gating the webhook (primary auth — see app.py).
+        # The operator pastes https://<tunnel>/sendblue/inbound/<WEBHOOK_SECRET>
+        # into the Sendblue dashboard.
+        self.webhook_secret = os.environ["WEBHOOK_SECRET"]
+        # The operator's own E.164 iMessage handle: the ONLY inbound number we
+        # accept, and the ONLY number we ever reply to (server-side identity).
+        self.allowed_user_number = os.environ["ALLOWED_USER_NUMBER"]
+        # Concurrency cap around the blocking Hermes subprocess. 1 for single-user P1A.
+        self.max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "1"))
         self.hermes_home = os.path.expanduser(
             os.environ.get("HERMES_HOME", "~/.hermes-savedlab")
         )

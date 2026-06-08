@@ -21,7 +21,7 @@
 
 **Operator inputs required (flagged at the task that needs them):**
 - Task 2 live smoke + Task 8: the operator's iPhone number (recipient) and a test iMessage sent to the Sendblue number.
-- Task 6: paste the `cloudflared` URL (`https://…/sendblue/inbound`) into the Sendblue dashboard webhook field.
+- Task 6: paste the `cloudflared` URL **including the secret path token** (`https://…/sendblue/inbound/<WEBHOOK_SECRET>`) into the Sendblue dashboard webhook field. The webhook is [SECURITY]-gated: the URL path token + a reply-target allowlist (`ALLOWED_USER_NUMBER`) authenticate every request.
 
 ---
 
@@ -317,37 +317,45 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 from lab.skeleton.app import create_app
 
-PAYLOAD = {"content": "hello", "number": "+1555", "is_outbound": False,
+TOKEN = "s3cr3t-t0ken"; ALLOWED = "+1555"
+PAYLOAD = {"content": "hello", "number": ALLOWED, "is_outbound": False,
            "message_handle": "h1", "opted_out": False}
+GOOD_URL = f"/sendblue/inbound/{TOKEN}"
 
 def _client():
     return TestClient(create_app(_FakeCfg()))
 
 class _FakeCfg:
     sendblue_key_id = "k"; sendblue_secret = "s"; sendblue_from = "+1999"
+    webhook_secret = TOKEN; allowed_user_number = ALLOWED; max_concurrency = 1
     hermes_home = "/h"; hermes_dir = "/d"; python_bin = "/p"
 
 def test_inbound_runs_hermes_and_replies():
-    with patch("lab.skeleton.app.run_hermes", return_value="hi back") as rh, \
-         patch("lab.skeleton.app.SendblueClient.send_message", return_value={"status":"QUEUED"}) as sm:
-        r = _client().post("/sendblue/inbound", json=PAYLOAD)
+    with patch("app.run_hermes", return_value="hi back") as rh, \
+         patch("app.SendblueClient.send_message", return_value={"status":"QUEUED"}) as sm:
+        r = _client().post(GOOD_URL, json=PAYLOAD)
     assert r.status_code == 200
     rh.assert_called_once()
     assert sm.call_args.kwargs.get("content") == "hi back" or sm.call_args.args[1] == "hi back"
 
 def test_inbound_ignores_outbound_echo_without_calling_hermes():
-    with patch("lab.skeleton.app.run_hermes") as rh:
-        r = _client().post("/sendblue/inbound", json={**PAYLOAD, "is_outbound": True})
+    with patch("app.run_hermes") as rh:
+        r = _client().post(GOOD_URL, json={**PAYLOAD, "is_outbound": True})
     assert r.status_code == 200
     rh.assert_not_called()
 
 def test_inbound_dedupes_by_handle():
-    with patch("lab.skeleton.app.run_hermes", return_value="x") as rh, \
-         patch("lab.skeleton.app.SendblueClient.send_message", return_value={}):
+    with patch("app.run_hermes", return_value="x") as rh, \
+         patch("app.SendblueClient.send_message", return_value={}):
         c = _client()
-        c.post("/sendblue/inbound", json=PAYLOAD)
-        c.post("/sendblue/inbound", json=PAYLOAD)  # same handle
+        c.post(GOOD_URL, json=PAYLOAD)
+        c.post(GOOD_URL, json=PAYLOAD)  # same handle
     assert rh.call_count == 1
+
+# [SECURITY] additional coverage in the real test file: wrong/absent token -> 401/404
+# (run_hermes NOT called); non-allowlisted number -> ignored; reply target is ALWAYS
+# allowed_user_number; empty/missing handle -> ignored; bounded-LRU eviction; and
+# run_hermes dispatched via asyncio.to_thread with timeout=60.
 ```
 
 - [ ] **Step 2: Run to verify it fails** → FAIL.
@@ -362,6 +370,12 @@ class Config:
         self.sendblue_key_id = os.environ["SENDBLUE_API_KEY_ID"]
         self.sendblue_secret = os.environ["SENDBLUE_API_SECRET_KEY"]
         self.sendblue_from   = os.environ["SENDBLUE_FROM_NUMBER"]      # the shared Sendblue number
+        # [SECURITY] high-entropy URL path token gating the webhook (primary auth)
+        self.webhook_secret  = os.environ["WEBHOOK_SECRET"]
+        # [SECURITY] operator's own E.164 handle: the ONLY number we accept inbound from
+        # AND the ONLY number we reply to (reply target derived from config, never payload)
+        self.allowed_user_number = os.environ["ALLOWED_USER_NUMBER"]
+        self.max_concurrency = int(os.environ.get("MAX_CONCURRENCY", "1"))  # cap on blocking Hermes runs
         self.hermes_home = os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes-savedlab"))
         self.hermes_dir  = os.path.expanduser("~/hermes-agent")
         self.python_bin  = os.path.expanduser("~/hermes-agent/venv/bin/python")
@@ -372,40 +386,51 @@ class Config:
 """Throwaway single-user webhook bridge: Sendblue inbound -> Hermes -> Sendblue reply.
 Idempotency is in-memory (process-local) — fine for the skeleton; P1C uses Convex."""
 from __future__ import annotations
-import logging
-from fastapi import FastAPI, Request
-from lab.skeleton.sendblue_client import SendblueClient, parse_inbound
-from lab.skeleton.hermes_bridge import run_hermes
+import asyncio, hmac, logging
+from fastapi import FastAPI, HTTPException, Request
+from sendblue_client import SendblueClient, parse_inbound
+from hermes_bridge import run_hermes
+from _dedup import BoundedDedup            # [SECURITY] bounded LRU (no unbounded set)
 
 log = logging.getLogger("skeleton")
 
 def create_app(cfg) -> FastAPI:
     app = FastAPI()
     client = SendblueClient(cfg.sendblue_key_id, cfg.sendblue_secret, cfg.sendblue_from)
-    seen: set[str] = set()
+    seen = BoundedDedup()
+    sem = asyncio.Semaphore(getattr(cfg, "max_concurrency", 1))  # cap blocking Hermes runs
 
     @app.get("/healthz")
     def healthz():
         return {"ok": True}
 
-    @app.post("/sendblue/inbound")
-    async def inbound(request: Request):
+    # [SECURITY] secret URL path token (constant-time) + reply-target allowlist;
+    # run_hermes runs off the event loop (asyncio.to_thread) under a Semaphore.
+    @app.post("/sendblue/inbound/{token}")
+    async def inbound(token: str, request: Request):
+        if not hmac.compare_digest(token, cfg.webhook_secret):
+            raise HTTPException(status_code=401)        # 401, NOT 5xx (Sendblue retries 5xx)
         payload = await request.json()
         msg = parse_inbound(payload)
         if msg is None:
             return {"ignored": True}
-        if msg.handle and msg.handle in seen:
+        if msg.user_number != cfg.allowed_user_number:  # allowlist (server-side identity)
+            return {"ignored": True}
+        if not msg.handle:                              # empty handle = hard reject
+            return {"ignored": True}
+        if not seen.add(msg.handle):                    # bounded LRU dedup
             return {"duplicate": True}
-        if msg.handle:
-            seen.add(msg.handle)
         try:
-            reply = run_hermes(msg.text, hermes_home=cfg.hermes_home,
-                               hermes_dir=cfg.hermes_dir, python_bin=cfg.python_bin)
-        except Exception as exc:                       # never 500 back to Sendblue
+            async with sem:
+                reply = await asyncio.to_thread(
+                    run_hermes, msg.text, hermes_home=cfg.hermes_home,
+                    hermes_dir=cfg.hermes_dir, python_bin=cfg.python_bin, timeout=60)
+        except Exception:                               # never 500 back to Sendblue
             log.exception("hermes failed")
             reply = "Sorry — I hit an error processing that. Try again in a moment."
         try:
-            client.send_message(to_number=msg.user_number, content=reply[:1800])
+            # reply target is ALWAYS config-derived, never the inbound payload
+            client.send_message(to_number=cfg.allowed_user_number, content=reply[:1800])
         except Exception:
             log.exception("sendblue reply failed")
         return {"ok": True}
@@ -429,6 +454,10 @@ def create_app(cfg) -> FastAPI:
 #!/usr/bin/env bash
 set -euo pipefail
 export SENDBLUE_FROM_NUMBER="${SENDBLUE_FROM_NUMBER:?set to the shared Sendblue number, e.g. +1...}"
+# [SECURITY] required: high-entropy webhook path token + operator's own iMessage handle
+export WEBHOOK_SECRET="${WEBHOOK_SECRET:?set to a high-entropy token, e.g. openssl rand -hex 24}"
+export ALLOWED_USER_NUMBER="${ALLOWED_USER_NUMBER:?set to the operator's E.164 iMessage number, e.g. +1...}"
+export MAX_CONCURRENCY="${MAX_CONCURRENCY:-1}"
 set -a; . "$HOME/.hermes-savedlab/.env"; set +a
 export HERMES_HOME="$HOME/.hermes-savedlab"
 cd "$(git rev-parse --show-toplevel)"
@@ -439,9 +468,9 @@ exec /Users/saveliy/hermes-agent/venv/bin/python -m uvicorn lab.skeleton.app:app
 
 - [ ] **Step 2: Install deps into the venv** — `~/hermes-agent/venv/bin/pip install fastapi uvicorn requests pytest httpx` (or a `lab/skeleton/requirements.txt`). Verify `/healthz` locally: start `run.sh`, then `curl -s 127.0.0.1:8787/healthz` → `{"ok":true}`.
 
-- [ ] **Step 3: Tunnel** — `cloudflared tunnel --url http://127.0.0.1:8787` (install via `brew install cloudflared` if missing). It prints `https://<random>.trycloudflare.com`. The webhook URL is `https://<random>.trycloudflare.com/sendblue/inbound`.
+- [ ] **Step 3: Tunnel** — `cloudflared tunnel --url http://127.0.0.1:8787` (install via `brew install cloudflared` if missing). It prints `https://<random>.trycloudflare.com`. The webhook URL is `https://<random>.trycloudflare.com/sendblue/inbound/<WEBHOOK_SECRET>` — **the secret path token is part of the URL** (it is the primary auth gate; a request to the bare `/sendblue/inbound` 404s, a wrong token 401s).
 
-- [ ] **Step 4: OPERATOR ACTION** — paste that URL into the Sendblue dashboard webhook field (Settings → Webhooks; webhook config is dashboard-only, no API). Document the exact dashboard path in `README.md` once confirmed.
+- [ ] **Step 4: OPERATOR ACTION** — paste that URL **(with the `<WEBHOOK_SECRET>` path token)** into the Sendblue dashboard webhook field (Settings → Webhooks; webhook config is dashboard-only, no API). Document the exact dashboard path in `README.md` once confirmed.
 
 - [ ] **Step 5: Commit** — `git add lab/skeleton/run.sh lab/skeleton/README.md && git commit -m "chore(skeleton): run script + tunnel + webhook setup docs"`
 
