@@ -59,6 +59,20 @@ def test_run_hermes_strips_ansi_escapes():
     assert out == "Hello world"
 
 
+def test_run_hermes_strips_leading_warning_notice():
+    """Hermes leaks operational notices to stdout even in --quiet mode, e.g.
+    `⚠️  Normalized model 'minimax/MiniMax-M3' to 'MiniMax-M3' for minimax.`
+    (observed live 2026-06-08). Those must never reach the user's iMessage."""
+    stdout = (
+        "⚠️  Normalized model 'minimax/MiniMax-M3' to 'MiniMax-M3' for minimax.\n"
+        "Example Domain\n"
+    )
+    fake = MagicMock(returncode=0, stdout=stdout, stderr="")
+    with patch("hermes_bridge.subprocess.run", return_value=fake):
+        out = run_hermes("q", hermes_home="/h", hermes_dir="/d", python_bin="/p")
+    assert out == "Example Domain"
+
+
 def test_run_hermes_raises_on_nonzero():
     fake = MagicMock(returncode=1, stdout="", stderr="boom")
     with patch("hermes_bridge.subprocess.run", return_value=fake):

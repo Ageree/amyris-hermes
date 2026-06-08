@@ -32,6 +32,11 @@ import subprocess
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
 # CSI / OSC ANSI escape sequences (colors, cursor moves, hyperlinks).
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[=>]")
+# Hermes leaks operational notices to stdout even in --quiet mode (e.g.
+# "⚠️  Normalized model 'minimax/MiniMax-M3' to 'MiniMax-M3' for minimax." —
+# observed live 2026-06-08). A whole line beginning with the warning sign is
+# never part of the answer; drop it so it never reaches the user's iMessage.
+_NOTICE = re.compile(r"^[ \t]*⚠️?.*$", re.MULTILINE)
 
 
 def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
@@ -69,5 +74,6 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
         stderr = (proc.stderr or "").strip()
         raise RuntimeError(f"hermes exited {proc.returncode}: {stderr[:500]}")
     cleaned = _THINK.sub("", proc.stdout)
-    cleaned = _ANSI.sub("", cleaned).strip()
+    cleaned = _ANSI.sub("", cleaned)
+    cleaned = _NOTICE.sub("", cleaned).strip()
     return cleaned or "(no reply)"
