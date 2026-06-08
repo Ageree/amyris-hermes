@@ -24,6 +24,20 @@ We do **not** build a browser from scratch (frankenstein principle: 5% glue, 95%
 ### Validated live (2026-06-08, MiniMax-M3, local mode, free)
 - `browser_navigate https://example.com` (5.8s) → accessibility-tree snapshot → agent extracted H1 **"Example Domain"** correctly, in 26s total. 28 tools active, browser included in the default `hermes-cli` preset. **The agent has a real browser today.**
 
+## 2.1 Browser stack — operator's three tools, two lanes (decided 2026-06-08)
+
+Operator chose **Camofox + Browserbase + `browser-use/browser-harness`** (MIT, 14.5k★). These do NOT all compose on one backend — two verified constraints drive the design:
+
+- **browser-harness is Chrome/CDP-only** (`BU_CDP_URL=http://127.0.0.1:9222`; Chrome launched `--remote-debugging-port=9222 --user-data-dir=<isolated>`; `chrome://inspect` per-attach approval on Chrome 144+). **Camofox is Firefox (Camoufox)** — Firefox only ships a partial, Mozilla-deprecated CDP subset → **browser-harness cannot reliably drive Camofox.** It pairs with Browserbase (Chrome cloud, per-session CDP) or a local Chrome.
+- **browser-harness has no own LLM loop** — it's driven by an external coding agent ("paste into Claude Code/Codex"). In the fleet, **Hermes is that driver** (its `python`/`terminal` tool runs the harness CLI: `browser-harness <<'PY' … PY`, `browser-harness --doctor`). Its **self-healing domain-skills** (`agent-workspace/domain-skills/<site>/`, set `BH_DOMAIN_SKILLS=1`) accumulate per user → the "self-improving skills" property, applied to browser actions.
+
+| Lane | Backend | Driver | Use for |
+|---|---|---|---|
+| **A — "log in once" persistent sessions** | **Camofox** (Firefox, anti-detect, per-user persistent profile via `managed_persistence`) | Hermes built-in `browser_*` tools | Acting *as the logged-in user* (IG, X…). One-time login via Camofox VNC live-view → cookies persist per `HERMES_HOME`. Cheap, always-on. **This is the operator's "user logs in once, agent acts inside Insta" model.** |
+| **B — hard targets + self-healing automation** | **Browserbase** (Chrome/CDP; residential proxies, CAPTCHA, persistent Contexts) | **browser-harness**, driven by Hermes | Aggressive-anti-bot sites, complex multi-step web tasks; per-site domain-skills improve every run. |
+
+**To verify before locking (do NOT assume):** (i) whether browser-harness accepts a *remote* Browserbase CDP URL (docs show only local `127.0.0.1:9222`) or needs a local Chrome that itself bridges to Browserbase; (ii) the Hermes→browser-harness driver integration (Hermes shells the harness CLI). De-risk by prototyping browser-harness against a local Chrome first.
+
 ## 3. What stays (unchanged from locked design)
 - Hermes Fleet: one Sendblue number → router + Convex control plane → per-user Hermes container on GCP → MiniMax-M3.
 - Sendblue is the iMessage channel (**DECIDE-2 resolved**; shared number created, API keys live-verified 2026-06-08).
@@ -41,13 +55,14 @@ We do **not** build a browser from scratch (frankenstein principle: 5% glue, 95%
 
 This is why no separate IG-resolver vendor is needed for the common case. (Keep yt-dlp/fxtwitter/Jina as the cheap fast path for public, no-login content — browser is the heavier fallback that also unlocks *actions*.)
 
-## 5. Decisions for the operator (genuinely yours)
-- **D-A — Fleet browser provider.** Recommendation: **Camofox (self-hosted) for per-user persistent logged-in sessions**, because the product needs durable per-user IG/TikTok/X logins, and Camofox's userId-per-profile model fits the fleet exactly. Use **Browserbase as a paid fallback** for sites with aggressive anti-bot where Camofox gets blocked. (Pure-local `agent-browser` is fine for the lab; not for the fleet's logged-in needs.)
-- **D-B — Instagram login.** To prove the logged-in-reel e2e end to end, the agent needs *a* logged-in IG session. For the lab: do you want to (i) provide a throwaway IG account's login for me to test the browser resolving a real reel, or (ii) keep the lab on public content and defer logged-in IG to the fleet? (No silent action — I won't log into any account without your go-ahead.)
-- **D-C — Scope of "general-purpose" for the first beta.** Recommendation: ship the assistant with **browser + calendar/email (Composio) + saved-content** as the v1 skill set, rather than trying to be everything. Confirm or redirect.
+## 5. Decisions — status 2026-06-08
+- **D-A — Browser stack. RESOLVED:** Camofox + Browserbase + `browser-use/browser-harness`, organized as the two lanes in §2.1.
+- **D-B — Instagram / logins. RESOLVED (model, not vendor):** operator — _«пока пофиг на инстаграм, надо будет просто сделать чтобы пользователь смог один раз залогиниться и думаю агент сможет совершать действия внутри инсты»_. So: **one-time user login → agent acts inside the persistent session** (Lane A / Camofox + VNC live-view). No throwaway account needed now; logged-in-reel e2e deferred until the one-time-login UX exists. IG is not a priority target — the general capability is.
+- **D-C — v1 skill scope + Composio. OPEN:** operator — _«по поводу коннекторов к composio не знаю»_. Recommendation stands (v1 = browser + saved-content + calendar/email), but **Composio connectors are deferred/undecided**; v1 can ship browser + saved-content first and add Composio connectors when decided.
 
-## 6. Immediate next steps (autonomous, pending your nod on §5)
-1. Enable the `browser` toolset explicitly in the fleet container image (`platform_toolsets` / preset), layered on the Phase-0 `resolver-core` image.
-2. Add a Camofox sidecar to the container plan; wire `managed_persistence` + per-user `HERMES_HOME` profile.
-3. Rework Phase-1 plan: demote DECIDE-1 (paid IG resolver) → browser-first resolution; add a "browser actions" milestone; keep Sendblue webhook round-trip as the first live gate.
-4. (If D-B = provide login) e2e: agent resolves a real IG reel logged-in + `browser_vision` understanding on M3.
+## 6. Immediate next steps
+1. **De-risk Lane B:** prototype `browser-harness` against a local Chrome (`uv tool install -e .`; `--remote-debugging-port=9222`; `browser-harness --doctor`; a `page_info()` smoke). Confirm (i) remote/Browserbase CDP support and (ii) Hermes-as-driver (shell the harness CLI from Hermes' `python`/`terminal` tool).
+2. **Lane A one-time-login UX:** stand up Camofox with `managed_persistence`, wire per-user `HERMES_HOME` profile, and design the VNC live-view handoff so the user logs in once.
+3. Enable the `browser` toolset explicitly in the fleet container image, layered on the Phase-0 `resolver-core` image; add a Camofox sidecar to the container plan.
+4. Rework the Phase-1 plan: demote DECIDE-1 (paid IG resolver) → browser-first resolution; add a "browser actions (two lanes)" milestone; keep the Sendblue webhook round-trip as the first live gate.
+5. Defer: Composio connectors (D-C), logged-in-reel e2e (until step 2's UX exists).
