@@ -81,3 +81,71 @@ density are within targets for text/article/X content. **Solve first in Phase 1,
 3. Bake yt-dlp + curl_cffi + `--impersonate` into the container image.
 4. Re-measure persistent-gateway RAM + get a metered MiniMax key for true $/item.
 5. Telegram channel live test (operator pairing), then Sendblue for the product number.
+
+---
+
+## Phase-1A walking skeleton — live e2e (2026-06-08)
+
+The full inbound→outbound loop was proven over a **public URL** (not just localhost):
+`Sendblue webhook payload → loca.lt tunnel → FastAPI bridge → Hermes (MiniMax-M3 + real browser) → Sendblue reply → operator iPhone`.
+
+- **Method:** a synthetic Sendblue inbound payload (`content="Open example.com … reply with its H1"`, `number=+79217818876`, valid `message_handle`) POSTed to the public webhook URL with the correct secret path token. Exercises every leg except Sendblue's own webhook *dispatch* (which needs the one-time dashboard paste).
+- **Round-trip latency:** **29.6 s** end-to-end (HTTP POST → Hermes browser run → Sendblue send accepted → 200). Single measurement; M3 + a real `browser_navigate` to example.com.
+- **Auth gates verified through the tunnel:** wrong token → `401`; empty body + right token → `{"ignored":true}`; valid payload → `{"ok":true}`.
+- **Outbound confirmed server-side:** bridge log shows the request from the loca.lt edge IP (`88.216.60.178`) returning `200` with **no** `hermes failed` and **no** `sendblue reply failed` — and since `send_message` raises on any non-2xx, that silence means Sendblue accepted the reply.
+- **Infra gotcha caught:** a second server (`bun scripts/telegram-relay.ts`) holds IPv6 `*:8787`; `localhost` resolves to `::1` first, so the tunnel must be pinned with `localtunnel --local-host 127.0.0.1` to reach the Python bridge (IPv4-only). Fingerprint the app through the tunnel (401 on a bad token) before trusting any tunnel URL.
+
+**M3 token cost per turn:** still PENDING a metered capture (the bridge strips `<think>` and does not surface usage). Carry over from Phase-0 action #4.
+
+**Remaining to close the loop for real (operator, ~2 min, can be done from iPhone):**
+1. Paste the webhook URL into Sendblue dashboard → Settings → Webhooks.
+2. iMessage the Sendblue number (+16466208124) any browser task.
+Both are dashboard/phone actions; everything code-side is done and proven.
+
+---
+
+## Phase-1C — durable Convex queue, live e2e (2026-06-08)
+
+The ephemeral P1A path (laptop + loca.lt tunnel + FastAPI) was replaced by an
+**always-on, tunnel-free** architecture and proven end-to-end on the operator's
+own Convex account:
+
+`iMessage → Sendblue → stable https://<dep>.convex.site webhook → durable queue → worker polls → Hermes (M3 + real browser) → Sendblue reply → iPhone`
+
+- **Why it matters:** no public port on the Mac, no tunnel. The brain is pure
+  outbound (polls `claimNext`). Messages are durable — if the brain is offline
+  they wait as `queued` and process on restart. This is a single-user assistant
+  the operator can actually run 24/7.
+- **Deployment:** `dev:zany-tapir-501`; functions deployed; env vars set
+  (`WEBHOOK_SECRET`, `ALLOWED_USER_NUMBER`, `WORKER_SECRET`). See
+  `../control-plane/README.md`.
+- **Webhook gates verified live (real Convex HTTP action):** valid payload →
+  `{"ok":true}` (enqueued); wrong path token → `401`; non-allowlisted number →
+  `{"ignored":true}` (NOT enqueued — confirmed: queue held exactly 1 row).
+- **Full loop, real everything:** enqueued via the live webhook, then ran the
+  worker once against live Convex + live Hermes + **real Sendblue**. The message
+  walked `queued → processing → done`; stored `reply = "Example Domain"`
+  (clean — see the bug below); a real iMessage was delivered to the operator's
+  iPhone (+79217818876). **Claim→complete ≈ 21 s; total process_one ≈ 23 s.**
+- **Bug caught by this e2e (units couldn't):** Hermes leaks an operational notice
+  to stdout even in `--quiet` mode —
+  `⚠️  Normalized model 'minimax/MiniMax-M3' to 'MiniMax-M3' for minimax.` — which
+  would prefix every user reply. Fixed in `hermes_bridge.py` (`_NOTICE` strips
+  leading `⚠️` lines); regression test added. The live `reply` field confirms the
+  fix in the real path.
+
+**New code (TDD, all green — 73 lab tests):**
+- `control-plane/convex/{schema,http,messages}.ts` — durable queue + webhook.
+- `lab/skeleton/convex_client.py` — thin Convex HTTP API client (6 tests).
+- `lab/skeleton/worker.py` — poll loop: claim → Hermes → reply → complete/fail
+  (11 tests). Reply target is always the config operator number, never payload.
+- `lab/skeleton/run-worker.sh` — turnkey runner (no tunnel).
+
+**Remaining to go live (operator, ~2 min, unchanged from P1A but now a STABLE URL):**
+1. Paste `https://zany-tapir-501.convex.site/sendblue/inbound/<WEBHOOK_SECRET>`
+   into Sendblue → Settings → Webhooks.
+2. Start the worker: `lab/skeleton/run-worker.sh`.
+3. iMessage `+16466208124` any browser task.
+
+**Still pending (carried over):** metered M3 $/turn capture; rotate the leaked
+MiniMax + Sendblue keys.
