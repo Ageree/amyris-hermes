@@ -1,6 +1,7 @@
 import { convexAuth } from "@convex-dev/auth/server";
 import Google from "@auth/core/providers/google";
 import { Password } from "@convex-dev/auth/providers/Password";
+import type { MutationCtx } from "./_generated/server";
 import { ResendOTP } from "./ResendOTP";
 import { grantSignupEntitlement } from "./billing/grant";
 
@@ -37,12 +38,17 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       // Account already linked to a user (re-sign-in) — keep it, write nothing new.
       if (existingUserId) return existingUserId;
 
+      // convex-auth types this callback's ctx as GenericMutationCtx<AnyDataModel>
+      // (provider-agnostic), so ctx.db.query("users").withIndex("email") wouldn't
+      // see our schema's `email` index. Re-type to OUR generated MutationCtx — at
+      // runtime it IS a mutation ctx for this deployment, so this is sound.
+      const db = (ctx as unknown as MutationCtx).db;
       const email = normalizeEmail(profile.email);
 
       // Cross-provider dedupe: an email already on a users row (incl. the
       // operator row pre-seeded by the backfill) wins — link this account to it.
       if (email) {
-        const byEmail = await ctx.db
+        const byEmail = await db
           .query("users")
           .withIndex("email", (q) => q.eq("email", email))
           .first();
@@ -51,7 +57,7 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
 
       const isOperator = email === OPERATOR_EMAIL;
       const now = Date.now();
-      const userId = await ctx.db.insert("users", {
+      const userId = await db.insert("users", {
         email,
         name: typeof profile.name === "string" ? profile.name : undefined,
         image: typeof profile.image === "string" ? profile.image : undefined,
@@ -61,7 +67,7 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       });
 
       // Source-of-truth entitlement (free instant; operator → max + unlimited).
-      await grantSignupEntitlement(ctx, userId, isOperator);
+      await grantSignupEntitlement(ctx as unknown as MutationCtx, userId, isOperator);
       return userId;
     },
   },
