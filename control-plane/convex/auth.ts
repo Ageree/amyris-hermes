@@ -31,10 +31,28 @@ function normalizeEmail(raw: unknown): string | undefined {
 }
 
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
-  providers: [Google, Password({ id: "password" }), ResendOTP],
+  providers: [
+    Google,
+    Password({
+      id: "password",
+      // The provider otherwise accepts ANY non-empty string. Minimal strength gate.
+      validatePasswordRequirements: (password: string) => {
+        if (password.length < 8) {
+          throw new Error("password must be at least 8 characters");
+        }
+      },
+    }),
+    ResendOTP,
+  ],
   callbacks: {
-    // Dedupe by email and seed app fields + entitlement on first sign-in.
-    async createOrUpdateUser(ctx, { existingUserId, profile }) {
+    // Dedupe by email and seed app fields + entitlement on first sign-in — but ONLY
+    // when email ownership is PROVEN. A bare credentials (password) sign-up can
+    // assert ANY email; deduping it into an existing row would hand the attacker
+    // that account (including the operator's — the takeover hole). So we:
+    //   - link to an existing row ONLY for verified sign-ins (oauth/email/verification),
+    //   - REJECT an unverified sign-up whose email already belongs to an account,
+    //   - set isOperator ONLY from a PROVEN operator email.
+    async createOrUpdateUser(ctx, { existingUserId, type, profile }) {
       // Account already linked to a user (re-sign-in) — keep it, write nothing new.
       if (existingUserId) return existingUserId;
 
@@ -45,17 +63,31 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
       const db = (ctx as unknown as MutationCtx).db;
       const email = normalizeEmail(profile.email);
 
-      // Cross-provider dedupe: an email already on a users row (incl. the
-      // operator row pre-seeded by the backfill) wins — link this account to it.
+      // Email ownership is proven by an OAuth provider (unless it explicitly returns
+      // emailVerified:false), by the email OTP provider, or by a post-token
+      // verification. A plain "credentials" (password) sign-up proves nothing.
+      const emailProven =
+        type === "email" ||
+        type === "verification" ||
+        (type === "oauth" && profile.emailVerified !== false);
+
+      // Cross-provider dedupe — link to an existing row ONLY when proven. An
+      // unverified sign-up to a taken email is refused (no squatting / takeover).
       if (email) {
         const byEmail = await db
           .query("users")
           .withIndex("email", (q) => q.eq("email", email))
           .first();
-        if (byEmail) return byEmail._id;
+        if (byEmail) {
+          if (emailProven) return byEmail._id;
+          throw new Error(
+            "an account with this email already exists — sign in instead",
+          );
+        }
       }
 
-      const isOperator = email === OPERATOR_EMAIL;
+      // isOperator (user #0, unlimited) is set ONLY from a proven operator email.
+      const isOperator = emailProven && email === OPERATOR_EMAIL;
       const now = Date.now();
       const userId = await db.insert("users", {
         email,

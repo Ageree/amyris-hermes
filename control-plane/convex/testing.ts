@@ -143,7 +143,14 @@ export const cleanupTenants = mutation({
   handler: async (ctx, { workerSecret, userA, userB }) => {
     assertWorker(workerSecret);
     assertTestMode();
+    // SAFETY: only ever delete THROWAWAY test users (tt-*@test.invalid). Even with
+    // ALLOW_TEST_SEED on, a wrong/foreign id (incl. the operator) is skipped — this
+    // can never nuke a real tenant.
+    const isThrowaway = (email: string | undefined) =>
+      /^tt-.*@test\.invalid$/.test(email ?? "");
     for (const uid of [userA, userB]) {
+      const target = await ctx.db.get(uid);
+      if (!target || !isThrowaway(target.email)) continue;
       const msgs = await ctx.db
         .query("messages")
         .withIndex("by_userId", (q) => q.eq("userId", uid))
@@ -162,8 +169,7 @@ export const cleanupTenants = mutation({
           .collect();
         for (const t of toks) await ctx.db.delete(t._id);
       }
-      const u = await ctx.db.get(uid);
-      if (u) await ctx.db.delete(uid);
+      await ctx.db.delete(uid);
     }
     return null;
   },

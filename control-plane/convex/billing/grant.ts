@@ -1,5 +1,6 @@
-import { internalMutation } from "../_generated/server";
+import { internalMutation, type MutationCtx } from "../_generated/server";
 import { v } from "convex/values";
+import type { Id } from "../_generated/dataModel";
 import { TIERS, OPERATOR_QUOTA, PERIOD_MS, tierValidator } from "./tiers";
 
 // ---------------------------------------------------------------------------
@@ -36,9 +37,9 @@ const grantArgs = {
 };
 
 export async function writeEntitlement(
-  ctx: any,
+  ctx: MutationCtx,
   args: {
-    userId: any;
+    userId: Id<"users">;
     tier: "free" | "pro" | "max";
     status: "active" | "past_due" | "canceled";
     source: "stub" | "paddle" | "stripe" | "lemonsqueezy";
@@ -106,8 +107,8 @@ export const applyEntitlement = internalMutation({
 
 // Convenience used by the signup callback: operator => max + unlimited, else free.
 export async function grantSignupEntitlement(
-  ctx: any,
-  userId: any,
+  ctx: MutationCtx,
+  userId: Id<"users">,
   isOperator: boolean,
 ): Promise<void> {
   await writeEntitlement(ctx, {

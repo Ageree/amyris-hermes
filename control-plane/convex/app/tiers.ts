@@ -48,13 +48,25 @@ export const chooseTier = mutation({
     }
 
     if (tier === "free") {
+      // Don't clobber an ACTIVE paid entitlement back to free (would silently drop
+      // a paid user's quota mid-period). A returning paid user re-running the wizard
+      // keeps their plan; only grant free when no active paid plan is in force.
+      const existing = await ctx.db
+        .query("entitlements")
+        .withIndex("by_user", (q) => q.eq("userId", userId))
+        .first();
+      if (existing && existing.status === "active" && existing.tier !== "free") {
+        // schema guarantees entitlements.tier is one of these literals.
+        const current = existing.tier as "free" | "pro" | "max";
+        return { ok: true, tier: current, granted: false, checkoutUrl: null, message: null };
+      }
       await writeEntitlement(ctx, {
         userId,
         tier: "free",
         status: "active",
         source: "stub",
       });
-      return { ok: true, tier, granted: true, checkoutUrl: null, message: null };
+      return { ok: true, tier: "free" as const, granted: true, checkoutUrl: null, message: null };
     }
 
     // Paid: do NOT grant — surface the checkout (stub returns a coming-soon URL).

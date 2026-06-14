@@ -248,7 +248,7 @@ const STATS_MAX = 5000;
 const STATUSES = ["queued", "processing", "done", "error"] as const;
 
 export const stats = query({
-  args: {},
+  args: { workerSecret: v.string() },
   returns: v.object({
     total: v.number(),
     queued: v.number(),
@@ -256,7 +256,10 @@ export const stats = query({
     done: v.number(),
     error: v.number(),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, { workerSecret }) => {
+    // Ops-only aggregate (no per-tenant data) — still WORKER_SECRET-gated so the
+    // fleet-wide queue volume isn't readable by any anonymous client (A4).
+    assertWorker(workerSecret);
     const counts: Record<(typeof STATUSES)[number], number> = {
       queued: 0,
       processing: 0,

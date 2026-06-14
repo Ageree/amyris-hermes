@@ -1,5 +1,6 @@
-import { internalMutation } from "./_generated/server";
+import { internalMutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { channelValidator } from "./lib/auth";
 
 // ---------------------------------------------------------------------------
@@ -53,8 +54,8 @@ function _genCode(): string {
 // the connect UI renders (deep-link for Telegram, copyable code for iMessage).
 // ---------------------------------------------------------------------------
 export async function issuePairingTokenImpl(
-  ctx: any,
-  userId: any,
+  ctx: MutationCtx,
+  userId: Id<"users">,
   channel: "imessage" | "telegram",
 ): Promise<{ token: string; code: string; expiresAt: number; channel: "imessage" | "telegram" }> {
   const now = Date.now();
@@ -63,7 +64,7 @@ export async function issuePairingTokenImpl(
   // a time (index-scoped read, not a table scan).
   const prior = await ctx.db
     .query("pairingTokens")
-    .withIndex("by_user_channel", (q: any) => q.eq("userId", userId).eq("channel", channel))
+    .withIndex("by_user_channel", (q) => q.eq("userId", userId).eq("channel", channel))
     .collect();
   for (const p of prior) {
     if (p.status === "active") await ctx.db.patch(p._id, { status: "superseded" });
@@ -101,11 +102,11 @@ const redeemReturns = v.object({
 // Shared redeem core: validate the token row, then check-then-bind (channel,address)
 // -> userId. `lookup` finds the row by token (Telegram) or code (iMessage).
 async function _redeem(
-  ctx: any,
+  ctx: MutationCtx,
   channel: "imessage" | "telegram",
   address: string,
-  lookup: () => Promise<any>,
-): Promise<{ ok: boolean; userId: any; reason?: string; idempotent?: boolean }> {
+  lookup: () => Promise<Doc<"pairingTokens"> | null>,
+): Promise<{ ok: boolean; userId: Id<"users"> | null; reason?: string; idempotent?: boolean }> {
   const now = Date.now();
   const addr = (address || "").trim();
   if (!addr) return { ok: false, userId: null, reason: "no_address" };
@@ -118,7 +119,7 @@ async function _redeem(
   // Existing binding for this (channel,address)?
   const existing = await ctx.db
     .query("channelBindings")
-    .withIndex("by_address", (q: any) => q.eq("channel", channel).eq("address", addr))
+    .withIndex("by_address", (q) => q.eq("channel", channel).eq("address", addr))
     .first();
 
   // Idempotent re-tap of a consumed token by the SAME owner -> re-greet, no-op.
@@ -150,16 +151,16 @@ async function _redeem(
 
 // Plain redeem impls (exported so the double-gated test wrappers in testing.ts can
 // drive the EXACT redeem path over HTTP — internalMutations aren't HTTP-callable).
-export async function redeemTelegramImpl(ctx: any, token: string, address: string) {
+export async function redeemTelegramImpl(ctx: MutationCtx, token: string, address: string) {
   return await _redeem(ctx, "telegram", address, () =>
-    ctx.db.query("pairingTokens").withIndex("by_token", (q: any) => q.eq("token", token)).first(),
+    ctx.db.query("pairingTokens").withIndex("by_token", (q) => q.eq("token", token)).first(),
   );
 }
 
-export async function redeemImessageImpl(ctx: any, code: string, address: string) {
+export async function redeemImessageImpl(ctx: MutationCtx, code: string, address: string) {
   const norm = (code || "").trim().toUpperCase();
   return await _redeem(ctx, "imessage", address, () =>
-    ctx.db.query("pairingTokens").withIndex("by_code", (q: any) => q.eq("code", norm)).first(),
+    ctx.db.query("pairingTokens").withIndex("by_code", (q) => q.eq("code", norm)).first(),
   );
 }
 
