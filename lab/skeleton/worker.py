@@ -49,6 +49,13 @@ except Exception:  # pragma: no cover - exercised only on a broken deploy
     fast_reply = None
     stream_fast_reply = None
 
+# Quota gate is a SOFT dependency too: a partial deploy must degrade to UNMETERED
+# (never block a turn because the module is missing), not crash-loop the daemon.
+try:
+    import quota_client
+except Exception:  # pragma: no cover - exercised only on a broken deploy
+    quota_client = None
+
 # Multi-bubble splitting now lives in the Channel layer (SendblueChannel.split via
 # bubbles.split_into_bubbles); the worker no longer imports it directly. The typing
 # indicator is still a soft dep (stale-deploy resilience): if unavailable, the
@@ -185,6 +192,12 @@ class WorkerConfig:
     # STREAMING fast lane: emit each bubble the moment it's ready (and detect a
     # defer in <1s) instead of waiting for the whole answer. Requires multi-bubble.
     streaming_enabled: bool = True
+    # Quota gate (M5): reserve one unit per real tenant turn BEFORE any model call;
+    # over-quota -> friendly upsell, zero model spend. Synthetic (resume:/e2e) and
+    # operator/legacy (userId-less) turns are unmetered. Flip QUOTA_ENABLED=0 to
+    # bypass entirely. upsell_url is appended to the over-quota message when set.
+    quota_enabled: bool = True
+    upsell_url: str = ""
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -234,6 +247,8 @@ class WorkerConfig:
             typing_interval=float(os.environ.get("TYPING_INTERVAL", "6.0")),
             typing_max_duration_ms=int(os.environ.get("TYPING_MAX_DURATION_MS", "10000")),
             streaming_enabled=_env_flag("STREAMING_ENABLED", True),
+            quota_enabled=_env_flag("QUOTA_ENABLED", True),
+            upsell_url=os.environ.get("UPGRADE_URL", ""),
         )
 
 
@@ -634,9 +649,38 @@ def process_one(
             log.exception("fail mutation also failed for %s", mid)
         return True
 
+    # --- Quota gate (M5, design §6) -------------------------------------------
+    # A real tenant turn is METERED: reserve one unit BEFORE any model call.
+    # Synthetic (resume:/e2e) and operator/legacy (userId-less) turns are NOT
+    # metered. A clean over-quota/canceled verdict => friendly upsell + complete +
+    # NO lane (zero model spend). A Convex error => FAIL OPEN (proceed unmetered).
+    handle = claimed.get("handle") or ""
+    metered = bool(
+        cfg.quota_enabled and quota_client is not None and user_id
+        and not quota_client.is_synthetic(handle)
+    )
+    reserved = False
+    if metered:
+        verdict = quota_client.check_and_reserve(convex, cfg.worker_secret, user_id)
+        if not verdict.get("allowed", True):
+            msg = quota_client.upsell_text(verdict.get("tier"), cfg.upsell_url)
+            try:
+                convex.mutation(
+                    "messages:complete",
+                    {"workerSecret": cfg.worker_secret, "id": mid, "reply": msg},
+                )
+            except Exception:
+                log.exception("complete (upsell) failed for %s", mid)
+            _BubbleEmitter(channel, reply_target, cfg).send_text(msg)
+            log.info("processed %s lane=quota-denied reason=%s", mid, verdict.get("reason"))
+            return True
+        # A fail-open verdict reserved NOTHING -> don't record usage or release later.
+        reserved = not verdict.get("fail_open", False)
+
     typing = _make_typing(channel, cfg, reply_target)
     emitter = _BubbleEmitter(channel, reply_target, cfg, typing=typing, sleep_fn=sleep_fn)
     t_hist = started  # stamp set after history fetch (stage timing)
+    hard_failed = False  # set on a hermes hard failure -> refund the reserved unit
     try:
         # Conversation memory: prior turns for this user (best-effort, [] on error).
         # Scoped by userId when present (A1) so no tenant's transcript bleeds across.
@@ -702,6 +746,7 @@ def process_one(
             except Exception as e:  # per-message failure must not kill the loop
                 log.exception("hermes failed for message %s", mid)
                 reply = ERROR_REPLY
+                hard_failed = True  # undelivered turn -> refund the reserved unit
                 convex.mutation(
                     "messages:fail",
                     {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
@@ -709,6 +754,17 @@ def process_one(
                 emitter.send_text(ERROR_REPLY)
     finally:
         typing.stop()
+
+    # Meter the turn (M5): record one usage unit on success, or refund the reserved
+    # unit on a hard (undelivered) failure. Best-effort — never affects the reply.
+    if metered and reserved:
+        if hard_failed:
+            quota_client.release_reserve(convex, cfg.worker_secret, user_id)
+        else:
+            quota_client.record_usage(
+                convex, cfg.worker_secret, user_id,
+                message_id=mid, lane=lane, channel=channel_kind,
+            )
 
     # Observability: lane, bubble count, history depth, end-to-end latency, and the
     # stage breakdown — ttfb (claim -> FIRST bubble on the wire = perceived latency),

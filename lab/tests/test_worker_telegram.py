@@ -22,6 +22,7 @@ def _cfg(**over):
         sendblue_key_id="k", sendblue_secret="s", sendblue_from="+1999",
         reply_target="+1OPERATOR", hermes_home="/h", hermes_dir="/d", python_bin="/p",
         poll_interval=0.01, hermes_timeout=60.0, typing_enabled=False,
+        quota_enabled=False,  # orthogonal to channel routing; see test_worker_quota
     )
     base.update(over)
     return WorkerConfig(**base)

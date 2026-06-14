@@ -7,7 +7,7 @@ import { issuePairingTokenImpl } from "../pairing";
 // ---------------------------------------------------------------------------
 // app/channels — the connect surface for the dashboard/wizard. All getAuthUserId-
 // gated (A4) and tenant-scoped (A1): every read uses channelBindings.by_user
-// q.eq("userId", me) — never .filter(), never a client userId. createPairingToken
+// q.eq("userId", me) — no row-scan predicate, never a client userId. createPairingToken
 // mints via the shared issuePairingTokenImpl (one transaction); the inbound
 // webhook redeems it. A client can only ever touch its OWN bindings/tokens.
 // ---------------------------------------------------------------------------

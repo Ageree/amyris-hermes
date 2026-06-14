@@ -24,6 +24,7 @@ def _cfg(**over):
         reply_target="+1OPERATOR", hermes_home="/h", hermes_dir="/d", python_bin="/p",
         poll_interval=0.01, hermes_timeout=60.0,
         typing_enabled=False,  # routing tests don't care about the typing thread
+        quota_enabled=False,   # orthogonal to routing; covered by test_worker_quota
     )
     base.update(over)
     return WorkerConfig(**base)

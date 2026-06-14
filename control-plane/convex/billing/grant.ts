@@ -1,6 +1,7 @@
 import { internalMutation, type MutationCtx } from "../_generated/server";
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+import { internal } from "../_generated/api";
 import { TIERS, OPERATOR_QUOTA, PERIOD_MS, tierValidator } from "./tiers";
 
 // ---------------------------------------------------------------------------
@@ -119,3 +120,41 @@ export async function grantSignupEntitlement(
     quotaOverride: isOperator ? OPERATOR_QUOTA : undefined,
   });
 }
+
+// ---------------------------------------------------------------------------
+// rollExpiredPeriods (design §6) — cron-driven safety net that resets the rolling
+// quota window for entitlements whose period has ended. checkAndReserve ALSO
+// self-rolls on read, so this only matters for users who are idle across a period
+// boundary (their dashboard shows a fresh window without waiting for a turn).
+// Paginated: take(ROLL_BATCH) per run; rolled rows get a FUTURE periodEnd so they
+// drop out of the by_periodEnd<=now scan, and the function self-reschedules until
+// a short batch — bounding reads/writes per transaction (design "too many writes").
+// ---------------------------------------------------------------------------
+const ROLL_BATCH = 500;
+
+export const rollExpiredPeriods = internalMutation({
+  args: {},
+  returns: v.object({ rolled: v.number(), more: v.boolean() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const due = await ctx.db
+      .query("entitlements")
+      .withIndex("by_periodEnd", (q) => q.lte("periodEnd", now))
+      .take(ROLL_BATCH);
+    for (const e of due) {
+      // Unlimited (operator) never needs a quota reset, but rolling the window is
+      // harmless and keeps periodEnd in the future so it leaves the scan.
+      await ctx.db.patch(e._id, {
+        periodStart: now,
+        periodEnd: now + PERIOD_MS,
+        msgUsed: 0,
+        updatedAt: now,
+      });
+    }
+    const more = due.length === ROLL_BATCH;
+    if (more) {
+      await ctx.scheduler.runAfter(0, internal.billing.grant.rollExpiredPeriods, {});
+    }
+    return { rolled: due.length, more };
+  },
+});

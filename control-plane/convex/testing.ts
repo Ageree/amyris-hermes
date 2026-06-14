@@ -1,6 +1,7 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { assertWorker, channelValidator } from "./lib/auth";
+import { assertWorker, channelValidator, tierValidator } from "./lib/auth";
+import { PERIOD_MS } from "./billing/tiers";
 import {
   issuePairingTokenImpl,
   redeemTelegramImpl,
@@ -136,6 +137,47 @@ export const testExpirePairing = mutation({
   },
 });
 
+// Set/replace a throwaway user's entitlement deterministically so the quota e2e
+// can drive over_quota / canceled without 100 real reserves. Double-gated.
+export const testSetEntitlement = mutation({
+  args: {
+    workerSecret: v.string(),
+    userId: v.id("users"),
+    tier: tierValidator,
+    msgQuota: v.number(),
+    msgUsed: v.number(),
+    status: v.optional(
+      v.union(v.literal("active"), v.literal("past_due"), v.literal("canceled")),
+    ),
+    periodEnd: v.optional(v.number()),
+  },
+  returns: v.id("entitlements"),
+  handler: async (ctx, { workerSecret, userId, tier, msgQuota, msgUsed, status, periodEnd }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    const now = Date.now();
+    const existing = await ctx.db
+      .query("entitlements")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    const fields = {
+      tier,
+      status: status ?? ("active" as const),
+      msgQuota,
+      msgUsed,
+      periodStart: now,
+      periodEnd: periodEnd ?? now + PERIOD_MS,
+      source: "stub" as const,
+      updatedAt: now,
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+      return existing._id;
+    }
+    return await ctx.db.insert("entitlements", { userId, ...fields });
+  },
+});
+
 // Delete two throwaway tenants and all their messages (index-scoped, bounded).
 export const cleanupTenants = mutation({
   args: { workerSecret: v.string(), userA: v.id("users"), userB: v.id("users") },
@@ -169,6 +211,17 @@ export const cleanupTenants = mutation({
           .collect();
         for (const t of toks) await ctx.db.delete(t._id);
       }
+      // Entitlement + usage rows a quota test created.
+      const ents = await ctx.db
+        .query("entitlements")
+        .withIndex("by_user", (q) => q.eq("userId", uid))
+        .collect();
+      for (const e of ents) await ctx.db.delete(e._id);
+      const usage = await ctx.db
+        .query("usageEvents")
+        .withIndex("by_user_at", (q) => q.eq("userId", uid))
+        .collect();
+      for (const ev of usage) await ctx.db.delete(ev._id);
       await ctx.db.delete(uid);
     }
     return null;
