@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@cp/api";
@@ -36,7 +36,7 @@ const STEP_ORDER: Step[] = ["tier", "channel", "pair", "done"];
 function StepDots({ step }: { step: Step }) {
   const idx = STEP_ORDER.indexOf(step);
   return (
-    <div className="flex items-center gap-1.5" aria-hidden>
+    <div className="flex items-center gap-1.5" aria-hidden="true">
       {STEP_ORDER.map((s, i) => (
         <span
           key={s}
@@ -60,6 +60,9 @@ export function ConnectWizard() {
   const [renewing, setRenewing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Ref for moving focus to the "you're connected" heading on flip to done (item 1).
+  const doneHeadingRef = useRef<HTMLHeadingElement>(null);
+
   const chooseTier = useMutation(api.app.tiers.chooseTier);
   const createPairingToken = useMutation(api.app.channels.createPairingToken);
 
@@ -75,6 +78,14 @@ export function ConnectWizard() {
     );
     if (bound) setStep("done");
   }, [step, channel, myChannels]);
+
+  // Move focus to the done heading when the step flips so screen readers announce
+  // the "you're connected" state immediately (item 1).
+  useEffect(() => {
+    if (step === "done" && doneHeadingRef.current) {
+      doneHeadingRef.current.focus();
+    }
+  }, [step]);
 
   const onChooseTier = async (tier: TierName) => {
     setError(null);
@@ -223,42 +234,61 @@ export function ConnectWizard() {
         </div>
       ) : null}
 
-      {step === "pair" && channel && minted ? (
-        <div className="flex flex-col gap-4" data-testid="step-pair">
-          <PairingPanel
-            channel={channel}
-            token={minted.token}
-            code={minted.code}
-            expiresAt={minted.expiresAt}
-            deepLink={minted.deepLink}
-            onRenew={onRenew}
-            renewing={renewing}
-          />
-          <button
-            type="button"
-            onClick={startOver}
-            className="self-start font-mono text-xs text-faint outline-none transition-colors hover:text-muted focus-visible:text-ink"
-            data-testid="start-over"
-          >
-            ← pick a different channel
-          </button>
-        </div>
-      ) : null}
+      {/*
+        Persistent live region wrapping both "pair" and "done" steps (item 1).
+        aria-live="polite" + aria-atomic="true" means the whole region is read
+        when its content changes — the flip from "waiting…" to "connected —
+        your assistant is live on <channel>" is fully announced.
+        We keep the div in the DOM for both steps so the region persists and
+        the AT picks up the transition correctly.
+      */}
+      <div role="status" aria-live="polite" aria-atomic="true">
+        {step === "pair" && channel && minted ? (
+          <div className="flex flex-col gap-4" data-testid="step-pair">
+            <PairingPanel
+              channel={channel}
+              token={minted.token}
+              code={minted.code}
+              expiresAt={minted.expiresAt}
+              deepLink={minted.deepLink}
+              onRenew={onRenew}
+              renewing={renewing}
+            />
+            <button
+              type="button"
+              onClick={startOver}
+              className="self-start font-mono text-xs text-faint outline-none transition-colors hover:text-muted focus-visible:text-ink"
+              data-testid="start-over"
+            >
+              ← pick a different channel
+            </button>
+          </div>
+        ) : null}
 
-      {step === "done" ? (
-        <Card className="rise flex flex-col items-start gap-4" data-testid="step-done">
-          <CardTitle className="lowercase">you're connected — say hi 👋</CardTitle>
-          <CardDescription>
-            send a message on {channel === "telegram" ? "telegram" : "imessage"} and your
-            assistant will answer. it lives where you do now.
-          </CardDescription>
-          <Link href="/dashboard" data-testid="done-dashboard">
-            <Button variant="primary" size="lg">
-              go to dashboard
-            </Button>
-          </Link>
-        </Card>
-      ) : null}
+        {step === "done" ? (
+          <Card className="rise flex flex-col items-start gap-4" data-testid="step-done">
+            {/*
+              tabIndex={-1} + ref so we can programmatically focus this heading
+              on flip to done — screen readers announce it immediately (item 1).
+            */}
+            <CardTitle
+              ref={doneHeadingRef}
+              tabIndex={-1}
+              className="lowercase outline-none"
+            >
+              you're connected — say hi <span aria-hidden="true">👋</span>
+            </CardTitle>
+            <CardDescription>
+              {`connected — your assistant is live on ${channel === "telegram" ? "telegram" : "imessage"}. send a message and it will answer. it lives where you do now.`}
+            </CardDescription>
+            <Link href="/dashboard" data-testid="done-dashboard">
+              <Button variant="primary" size="lg">
+                go to dashboard
+              </Button>
+            </Link>
+          </Card>
+        ) : null}
+      </div>
     </div>
   );
 }

@@ -37,7 +37,7 @@ export function TierCard() {
   if (user === undefined) {
     return (
       <Card className="rise" data-testid="tier-card">
-        <CardTitle>plan</CardTitle>
+        <CardTitle as="h2">plan</CardTitle>
         <div className="mt-4 h-8 w-28 animate-pulse rounded bg-surface-2" />
       </Card>
     );
@@ -70,7 +70,7 @@ export function TierCard() {
   return (
     <Card className="rise" data-testid="tier-card">
       <div className="flex items-baseline justify-between gap-3">
-        <CardTitle>plan</CardTitle>
+        <CardTitle as="h2">plan</CardTitle>
         {isOperator ? (
           <Badge tone="lime">max · unlimited</Badge>
         ) : (
@@ -100,7 +100,7 @@ export function TierCard() {
           role="status"
           className="mt-4 rounded-[var(--radius)] border border-lime/30 bg-lime/10 px-3 py-2 text-xs text-lime"
         >
-          {banner} 👋
+          {banner} <span aria-hidden="true">👋</span>
         </p>
       )}
     </Card>

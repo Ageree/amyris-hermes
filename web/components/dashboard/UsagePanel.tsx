@@ -18,15 +18,15 @@ export function UsagePanel() {
 
   return (
     <Card className="rise" data-testid="usage-panel">
-      <CardTitle>usage</CardTitle>
+      <CardTitle as="h2">usage</CardTitle>
       <CardDescription className="mt-1">
         messages this period
       </CardDescription>
 
       <div className="mt-5">
         {usage === undefined ? (
-          // loading skeleton
-          <div className="space-y-3" aria-hidden>
+          // loading skeleton — aria-hidden; polite region in DashboardShell announces loading (item 13)
+          <div className="space-y-3" aria-hidden="true">
             <div className="h-2 w-full rounded-full bg-surface-2" />
             <div className="h-4 w-24 rounded bg-surface-2" />
           </div>
@@ -47,14 +47,15 @@ export function UsagePanel() {
   );
 }
 
+// Unlimited plan: render as plain text, no progressbar role (item 14 — a
+// progressbar without aria-valuenow is indeterminate and misleads screen readers).
 function UnlimitedMeter({ periodEnd }: { periodEnd: number }) {
   return (
     <div>
+      {/* Decorative full bar — aria-hidden since the text below is the real content. */}
       <div
         className="h-2 w-full overflow-hidden rounded-full bg-surface-2"
-        role="progressbar"
-        aria-label="messages used"
-        aria-valuetext="unlimited"
+        aria-hidden="true"
       >
         <div className="h-full w-full rounded-full bg-lime" />
       </div>

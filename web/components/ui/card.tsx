@@ -1,4 +1,4 @@
-import { HTMLAttributes } from "react";
+import { ElementType, HTMLAttributes, forwardRef } from "react";
 import { cn } from "@/lib/utils";
 
 export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -13,9 +13,25 @@ export function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
   );
 }
 
-export function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("text-lg font-medium text-ink", className)} {...props} />;
+// CardTitle accepts an optional `as` prop so callers can choose the correct
+// heading level for their document position (item 5). Default is h3 for
+// backwards-compat; under a page h1 pass as="h2".
+// forwardRef lets callers focus the heading programmatically (item 1).
+interface CardTitleProps extends HTMLAttributes<HTMLHeadingElement> {
+  as?: ElementType;
 }
+
+export const CardTitle = forwardRef<HTMLHeadingElement, CardTitleProps>(
+  function CardTitle({ as: Tag = "h3", className, ...props }, ref) {
+    return (
+      <Tag
+        ref={ref}
+        className={cn("text-lg font-medium text-ink", className)}
+        {...props}
+      />
+    );
+  },
+);
 
 export function CardDescription({
   className,

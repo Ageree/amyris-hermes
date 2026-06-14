@@ -30,7 +30,7 @@ export function ConnectionsPanel() {
     <Card className="rise" data-testid="connections-panel">
       <div className="flex items-baseline justify-between gap-3">
         <div>
-          <CardTitle>channels</CardTitle>
+          <CardTitle as="h2">channels</CardTitle>
           <CardDescription className="mt-1">
             where your assistant reaches you
           </CardDescription>
@@ -47,7 +47,14 @@ export function ConnectionsPanel() {
 
       <div className="mt-5">
         {channels === undefined ? (
-          <LoadingRows />
+          <>
+            {/* Polite announcement while list loads (item 13). */}
+            <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+              loading channels…
+            </div>
+            {/* Visual skeleton — aria-hidden so it's never perceived (item 13). */}
+            <LoadingRows />
+          </>
         ) : channels.length === 0 ? (
           <EmptyState />
         ) : (
@@ -69,7 +76,7 @@ export function ConnectionsPanel() {
 
 function LoadingRows() {
   return (
-    <div className="space-y-2" aria-hidden>
+    <div className="space-y-2" aria-hidden="true">
       {[0, 1].map((i) => (
         <div
           key={i}
@@ -109,25 +116,42 @@ function ConnectionRow({
 }) {
   const disconnect = useMutation(api.app.channels.disconnectChannel);
   const [pending, setPending] = useState(false);
+  // Polite live region message for disconnect outcome (item 12).
+  const [announcement, setAnnouncement] = useState<string>("");
 
   async function handleDisconnect() {
     setPending(true);
+    setAnnouncement("");
     try {
       await disconnect({ channel: kind, address });
-      // the useQuery subscription flips the list reactively; nothing else to do.
+      // the useQuery subscription flips the list reactively; announce success.
+      setAnnouncement(`${channelLabel(kind)} disconnected`);
     } catch {
       setPending(false);
+      setAnnouncement(`couldn't disconnect — try again`);
     }
   }
 
+  const tail = address.trim().slice(-4);
+
   return (
-    <li className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface-2 px-4 py-3">
+    <li
+      className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface-2 px-4 py-3"
+      // Accessible row label: channel name + masked address (item 11)
+      aria-label={`${channelLabel(kind)} ending in ${tail}`}
+    >
+      {/* Polite live region for disconnect success/failure (item 12). */}
+      <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+        {announcement}
+      </div>
+
       <div className="flex min-w-0 items-center gap-3">
         <StatusDot connected={verified} />
         <div className="min-w-0">
           <p className="font-mono text-sm text-ink">{channelLabel(kind)}</p>
           <p className="truncate font-mono text-xs text-faint">
-            {maskAddress(address)}
+            {/* Bullets are decorative — aria-hidden; full label is on the <li> (item 11). */}
+            <span aria-hidden="true">••• </span>{tail}
             {!verified && <span className="ml-2 text-muted">· pending</span>}
           </p>
         </div>
@@ -139,7 +163,8 @@ function ConnectionRow({
         disabled={pending}
         aria-label={`disconnect ${channelLabel(kind)}`}
       >
-        {pending ? "…" : "disconnect"}
+        {/* "disconnecting…" matches the app's other pending labels (item 17). */}
+        {pending ? "disconnecting…" : "disconnect"}
       </Button>
     </li>
   );

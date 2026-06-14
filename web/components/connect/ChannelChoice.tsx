@@ -5,18 +5,18 @@ import { cn } from "@/lib/utils";
 
 export type Channel = "imessage" | "telegram";
 
-const CHOICES: { kind: Channel; title: string; description: string; glyph: string }[] = [
+// glyph field removed — was an empty string (dead code). aria-label carries the
+// accessible name on each button (item 8).
+const CHOICES: { kind: Channel; title: string; description: string }[] = [
   {
     kind: "imessage",
     title: "imessage",
     description: "tap to open messages, send one line, you're paired.",
-    glyph: "",
   },
   {
     kind: "telegram",
     title: "telegram",
     description: "tap start in the bot — works on any device.",
-    glyph: "",
   },
 ];
 
@@ -57,14 +57,13 @@ export function ChannelChoice({
                 disabled && !isPending && "opacity-50",
               )}
             >
-              <div className="flex items-center gap-2">
-                <span className="font-mono text-2xl text-lime" aria-hidden>
-                  {c.glyph}
-                </span>
-                <CardTitle className="lowercase">{c.title}</CardTitle>
-              </div>
+              <CardTitle className="lowercase">{c.title}</CardTitle>
               <CardDescription className="mt-2">{c.description}</CardDescription>
-              <p className="mt-4 font-mono text-xs text-faint">
+              {/* Polite live region announces the in-flight "minting" state (item 8). */}
+              <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+                {isPending ? "minting your link…" : ""}
+              </div>
+              <p className="mt-4 font-mono text-xs text-faint" aria-hidden="true">
                 {isPending ? "minting your link…" : "choose →"}
               </p>
             </Card>

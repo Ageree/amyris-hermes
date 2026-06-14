@@ -5,7 +5,7 @@ import { ConnectWizard } from "@/components/connect/ConnectWizard";
 // call inside carries the verified JWT.
 export default function ConnectPage() {
   return (
-    <main className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col justify-center px-6 py-16">
+    <main id="main" className="mx-auto flex min-h-dvh w-full max-w-2xl flex-col justify-center px-6 py-16">
       <ConnectWizard />
     </main>
   );

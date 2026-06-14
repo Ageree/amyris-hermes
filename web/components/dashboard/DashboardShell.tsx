@@ -9,16 +9,27 @@ import { SignOutButton } from "@/components/dashboard/SignOutButton";
 
 export function DashboardShell() {
   return (
-    <main className="mx-auto min-h-dvh w-full max-w-5xl px-5 py-6 sm:px-8">
+    <main id="main" className="mx-auto min-h-dvh w-full max-w-5xl px-5 py-6 sm:px-8">
       <TopBar />
 
-      {/* the unauthed edge is handled by middleware (redirect to /signin). while
-          auth resolves we show a calm shell; we never render data unauthed. */}
+      {/* Polite live region announces loading/loaded state to screen readers (item 13).
+          Skeletons are aria-hidden so they're never perceived directly. */}
       <AuthLoading>
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          loading dashboard…
+        </div>
         <DashboardSkeleton />
       </AuthLoading>
 
       <Authenticated>
+        {/* SR-only page heading — document has exactly one h1 (item 5). */}
+        <h1 className="sr-only">dashboard</h1>
+
+        {/* Screen readers hear this once data arrives (item 13). */}
+        <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+          dashboard loaded
+        </div>
+
         <section className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
           {/* tier + usage stack on the left; connections take the right column on
               wide screens, full width when stacked. */}
@@ -81,11 +92,11 @@ function UserEmail() {
 }
 
 function DashboardSkeleton() {
+  // aria-hidden: pure visual skeleton, never perceived (item 13)
   return (
     <section
       className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3"
-      aria-hidden
-      aria-busy="true"
+      aria-hidden="true"
     >
       <div className="flex flex-col gap-4 lg:col-span-2">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">

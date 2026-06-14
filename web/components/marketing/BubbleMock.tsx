@@ -45,7 +45,7 @@ export function BubbleMock() {
           book a table for two at 8 tonight somewhere good nearby
         </Bubble>
         <Bubble from="assistant" delayMs={260}>
-          on it — checking openings now 👋
+          on it — checking openings now <span aria-hidden="true">👋</span>
         </Bubble>
         <Bubble from="assistant" delayMs={460}>
           done. booked rosa at 8:15, 4 min walk. confirmation in your inbox.

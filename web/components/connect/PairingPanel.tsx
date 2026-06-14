@@ -27,6 +27,8 @@ export interface PairingPanelProps {
 }
 
 // One waiting row, shared by both channels — the live "we're listening" cue.
+// The text is already in the live region wrapping PairingPanel (ConnectWizard),
+// so it will be announced when the panel first appears.
 function WaitingRow({ label }: { label: string }) {
   return (
     <div className="flex items-center gap-2 text-sm text-muted" data-testid="waiting-row">
@@ -35,6 +37,9 @@ function WaitingRow({ label }: { label: string }) {
     </div>
   );
 }
+
+// Clipboard outcome labels — "copied" / error hint (item 7).
+type CopyState = "idle" | "copied" | "failed";
 
 export function PairingPanel({
   channel,
@@ -45,7 +50,7 @@ export function PairingPanel({
   onRenew,
   renewing = false,
 }: PairingPanelProps) {
-  const [copied, setCopied] = useState(false);
+  const [copyState, setCopyState] = useState<CopyState>("idle");
   const [expired, setExpired] = useState(() => expiresAt - Date.now() <= 0);
 
   // Countdown reports expiry up so we can swap the CTA for "get a new link".
@@ -55,12 +60,12 @@ export function PairingPanel({
   const copyCode = async () => {
     try {
       await navigator.clipboard.writeText(`pair ${code}`);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
+      setCopyState("copied");
+      setTimeout(() => setCopyState("idle"), 1600);
     } catch {
-      // Clipboard blocked (insecure context / denied): the mono chip is still
-      // visible for manual copy, so we fail silently rather than alarm the user.
-      setCopied(false);
+      // Clipboard blocked (insecure context / denied): show + announce hint (item 7).
+      setCopyState("failed");
+      setTimeout(() => setCopyState("idle"), 4000);
     }
   };
 
@@ -92,17 +97,22 @@ export function PairingPanel({
       ) : channel === "telegram" ? (
         <div className="flex flex-col gap-5">
           <div className="flex flex-col items-center gap-4">
-            <Qr value={qrValue} label="telegram pairing qr" />
+            <Qr value={qrValue} label="qr code to pair telegram — or use the link/code below" />
             {tgLink ? (
-              <Button
-                variant="primary"
-                size="lg"
-                className="w-full"
-                onClick={() => window.open(tgLink, "_blank", "noopener,noreferrer")}
+              /*
+                Telegram "open telegram" is an <a> (not <button> doing window.open)
+                so it carries URL semantics, is popup-safe, and matches the iMessage
+                pattern (item 10).
+              */
+              <a
+                href={tgLink}
+                target="_blank"
+                rel="noopener noreferrer"
                 data-testid="tg-open"
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-6 text-base font-medium text-canvas shadow-[0_0_0_1px_rgba(198,242,78,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
               >
                 open telegram
-              </Button>
+              </a>
             ) : (
               <div className="w-full rounded-[var(--radius)] border border-border bg-surface-2 p-4 text-center">
                 <p className="text-sm text-muted">open the bot and send:</p>
@@ -143,13 +153,34 @@ export function PairingPanel({
           </div>
 
           {/* The copyable mono chip — the exact line to send. */}
-          <div className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface-2 px-4 py-3">
-            <code className="break-all font-mono text-sm text-lime" data-testid="pair-code">
-              pair {code}
-            </code>
-            <Button variant="secondary" size="sm" onClick={copyCode} data-testid="copy-code">
-              {copied ? "copied" : "copy"}
-            </Button>
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-3 rounded-[var(--radius)] border border-border bg-surface-2 px-4 py-3">
+              <code className="break-all font-mono text-sm text-lime" data-testid="pair-code">
+                pair {code}
+              </code>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={copyCode}
+                data-testid="copy-code"
+                aria-label={copyState === "copied" ? "copied to clipboard" : "copy pairing code"}
+              >
+                {copyState === "copied" ? "copied" : "copy"}
+              </Button>
+            </div>
+
+            {/* Polite live region announces copy success/failure to screen readers (item 7). */}
+            <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+              {copyState === "copied" ? "copied to clipboard" : ""}
+              {copyState === "failed" ? "couldn't copy — select the code manually" : ""}
+            </div>
+
+            {/* Visible hint on clipboard failure (item 7). */}
+            {copyState === "failed" ? (
+              <p className="text-xs text-muted" role="alert">
+                couldn't copy — select the code manually
+              </p>
+            ) : null}
           </div>
 
           <WaitingRow label="waiting for your message…" />

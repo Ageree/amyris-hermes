@@ -18,6 +18,10 @@ export default function RootLayout({
     <ConvexAuthNextjsServerProvider>
       <html lang="en" suppressHydrationWarning>
         <body className="min-h-dvh bg-canvas text-ink antialiased">
+          {/* Skip link — first focusable element; jumps keyboard users past nav (item 6). */}
+          <a href="#main" className="sr-only skip-link">
+            skip to main content
+          </a>
           <ConvexClientProvider>{children}</ConvexClientProvider>
         </body>
       </html>

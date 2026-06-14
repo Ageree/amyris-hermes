@@ -1,21 +1,43 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import QRCode from "qrcode";
 
 const SIZE = 180;
 
-// A scannable QR for the pairing value (telegram deep-link or raw token). Uses
-// the public qrserver endpoint via a plain <img> (no qr npm dep). Degrades
-// gracefully: if the image fails to load, we show the raw value as a fallback so
-// the user is never stuck — the deep-link / code is always reachable elsewhere too.
+// Client-side QR generation using the `qrcode` npm package (item 18 — security).
+// The pairing token/deep-link is a bind-to-account credential that must NOT be
+// sent to any third-party host. All encoding happens in the browser; the value
+// never leaves the tab.
+//
+// Falls back gracefully: if canvas generation fails (very unlikely), we show
+// the raw value as selectable text so the user is never stuck — the deep-link
+// and code are always reachable via other UI elements too.
 export function Qr({ value, label = "qr code" }: { value: string; label?: string }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const [failed, setFailed] = useState(false);
 
-  if (!value) return null;
+  useEffect(() => {
+    if (!value || !canvasRef.current) return;
 
-  const src = `https://api.qrserver.com/v1/create-qr-code/?size=${SIZE}x${SIZE}&data=${encodeURIComponent(
-    value,
-  )}`;
+    let cancelled = false;
+    QRCode.toCanvas(canvasRef.current, value, {
+      width: SIZE,
+      margin: 1,
+      color: {
+        dark: "#0a0a0b",  // canvas color
+        light: "#ededf0", // ink color — good contrast for scanning
+      },
+    }).then(() => {
+      if (!cancelled) setFailed(false);
+    }).catch(() => {
+      if (!cancelled) setFailed(true);
+    });
+
+    return () => { cancelled = true; };
+  }, [value]);
+
+  if (!value) return null;
 
   if (failed) {
     return (
@@ -33,13 +55,13 @@ export function Qr({ value, label = "qr code" }: { value: string; label?: string
   }
 
   return (
-    <img
-      src={src}
-      alt={label}
+    <canvas
+      ref={canvasRef}
       width={SIZE}
       height={SIZE}
-      loading="lazy"
-      onError={() => setFailed(true)}
+      // Actionable alt-equivalent via aria-label (item 15).
+      role="img"
+      aria-label={label}
       className="rounded-[var(--radius)] border border-border bg-ink p-2"
       data-testid="qr-img"
     />

@@ -9,7 +9,7 @@ export default function Home() {
   return (
     <div className="flex min-h-dvh flex-col">
       <Nav />
-      <main className="flex-1">
+      <main id="main" className="flex-1">
         <Hero />
         <TierGrid />
       </main>

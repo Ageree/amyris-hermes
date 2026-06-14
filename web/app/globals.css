@@ -13,7 +13,7 @@
   --color-border: #2a2a31;
   --color-ink: #ededf0;
   --color-muted: #9a9aa6;
-  --color-faint: #6a6a76;
+  --color-faint: #8a8a96;
   --color-lime: #c6f24e;
   --color-lime-dim: #9bbf3a;
   --color-danger: #ff6b6b;
@@ -56,6 +56,59 @@ body {
 }
 .rise {
   animation: rise 0.5s ease-out both;
+}
+
+/* Skip-link: visually hidden until focused (item 6). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
+/* Skip link becomes visible on focus so keyboard users can bypass nav (item 6). */
+.skip-link:focus-visible {
+  position: fixed;
+  top: 0.75rem;
+  left: 0.75rem;
+  z-index: 9999;
+  width: auto;
+  height: auto;
+  padding: 0.5rem 1rem;
+  margin: 0;
+  overflow: visible;
+  clip: auto;
+  white-space: normal;
+  background: var(--color-lime);
+  color: #0a0a0b;
+  font-size: 0.875rem;
+  font-weight: 600;
+  border-radius: var(--radius);
+  outline: 2px solid var(--color-canvas);
+  outline-offset: 2px;
+}
+
+/* Reduced-motion support (item 3): disable animations for users who prefer it. */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot {
+    animation: none;
+  }
+  .rise {
+    animation: none;
+  }
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 ::selection {
