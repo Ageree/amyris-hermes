@@ -56,6 +56,13 @@ try:
 except Exception:  # pragma: no cover - exercised only on a broken deploy
     quota_client = None
 
+# Fleet client (M6) is a SOFT dependency: a stale/partial deploy must degrade
+# gracefully — the always-on loop must never crash because this module is absent.
+try:
+    import fleet_client
+except Exception:  # pragma: no cover - exercised only on a broken deploy
+    fleet_client = None
+
 # Multi-bubble splitting now lives in the Channel layer (SendblueChannel.split via
 # bubbles.split_into_bubbles); the worker no longer imports it directly. The typing
 # indicator is still a soft dep (stale-deploy resilience): if unavailable, the
@@ -198,6 +205,16 @@ class WorkerConfig:
     # bypass entirely. upsell_url is appended to the over-quota message when set.
     quota_enabled: bool = True
     upsell_url: str = ""
+    # Fleet (M6): worker mode ("scoped" for a per-tenant container, "legacy" for the
+    # original operator-global worker) and the optional instance ID assigned by the
+    # controller. Neither is required for the queue to work — they are metadata.
+    worker_mode: str = "legacy"
+    instance_id: str = ""
+    # Heartbeat (M6): the scoped worker pings fleet:heartbeat once per poll loop
+    # iteration so the controller knows it is alive and can act on desired="stopped".
+    # Flip HEARTBEAT_ENABLED=0 to disable without restarting (useful during tests /
+    # a partial deploy where fleet_client is not yet available).
+    heartbeat_enabled: bool = True
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -249,6 +266,12 @@ class WorkerConfig:
             streaming_enabled=_env_flag("STREAMING_ENABLED", True),
             quota_enabled=_env_flag("QUOTA_ENABLED", True),
             upsell_url=os.environ.get("UPGRADE_URL", ""),
+            worker_mode=os.environ.get(
+                "WORKER_MODE",
+                "scoped" if os.environ.get("USER_ID") else "legacy",
+            ),
+            instance_id=os.environ.get("INSTANCE_ID", ""),
+            heartbeat_enabled=_env_flag("HEARTBEAT_ENABLED", True),
         )
 
 
@@ -562,6 +585,27 @@ def _as_registry(channels_or_client: Any, cfg: WorkerConfig) -> ChannelRegistry:
     })
 
 
+def _maybe_heartbeat(convex: Any, cfg: WorkerConfig) -> Optional[str]:
+    """Send a fleet heartbeat if enabled and in scoped mode. FAIL-SOFT.
+
+    Returns the desired-state string from fleet:heartbeat ("running" | "stopped"
+    | None) or None when disabled/legacy/error. Never raises — the always-on
+    worker loop must never be interrupted by a control-plane hiccup.
+
+    The caller (run_loop) should log a warning when desired="stopped" is returned
+    so an operator can see it, but MUST NOT hard-exit mid-loop: graceful drain
+    of any in-flight message is safer than an abrupt stop.
+    """
+    if not cfg.heartbeat_enabled:
+        return None
+    if not cfg.scoped_user_id:
+        return None
+    if fleet_client is None:
+        log.debug("fleet_client unavailable; skipping heartbeat for %s", cfg.scoped_user_id)
+        return None
+    return fleet_client.heartbeat(convex, cfg.worker_secret, cfg.scoped_user_id)
+
+
 def process_one(
     convex: Any,
     channels: Any,
@@ -857,6 +901,18 @@ def run_loop(
                 if last_intent is None or now - last_intent >= cfg.intent_interval:
                     intent_fn(convex, cfg)
                     last_intent = now
+            # Fleet heartbeat (M6): once per poll iteration in scoped mode.
+            # FAIL-SOFT: a control-plane outage must never kill the loop.
+            # If desired="stopped" is returned, log it (graceful-drain TODO) but
+            # continue — mid-loop hard-exit is unsafe; the controller will stop
+            # scheduling new containers instead.
+            _hb = _maybe_heartbeat(convex, cfg)
+            if _hb == "stopped":
+                log.warning(
+                    "fleet:heartbeat desired=stopped for %s — controller requested "
+                    "shutdown; continuing until natural drain (TODO: graceful stop)",
+                    cfg.scoped_user_id,
+                )
             did = process_fn(convex, registry, cfg)
         except Exception:
             log.exception("worker iteration crashed")

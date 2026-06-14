@@ -1,5 +1,6 @@
 import { internalMutation, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { channelValidator } from "./lib/auth";
 
@@ -188,5 +189,34 @@ export const redeemImessage = internalMutation({
   returns: redeemReturns,
   handler: async (ctx, { code, address }) => {
     return await redeemImessageImpl(ctx, code, address);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// expireStaleTokens (cron, internal) — housekeeping. consume already self-checks
+// expiresAt>now, so this is non-load-bearing; it keeps the by_user_channel
+// "one active per (user,channel)" invariant clean and the dashboard honest. Index
+// scan by_status_expiry(status="active") ORDERED by expiresAt, so the oldest
+// (definitely-expired) rows come first; stop at the first un-expired one. Paginate
+// via self-reschedule.
+// ---------------------------------------------------------------------------
+const TOKEN_REAP_BATCH = 500;
+
+export const expireStaleTokens = internalMutation({
+  args: {},
+  returns: v.object({ expired: v.number() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const stale = await ctx.db
+      .query("pairingTokens")
+      .withIndex("by_status_expiry", (q) =>
+        q.eq("status", "active").lt("expiresAt", now),
+      )
+      .take(TOKEN_REAP_BATCH);
+    for (const t of stale) await ctx.db.patch(t._id, { status: "expired" });
+    if (stale.length === TOKEN_REAP_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.pairing.expireStaleTokens, {});
+    }
+    return { expired: stale.length };
   },
 });

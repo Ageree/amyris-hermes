@@ -1,0 +1,5 @@
+# Fleet controller uses only Python stdlib (urllib, subprocess, dataclasses,
+# logging, time, os) — no third-party packages required at runtime.
+#
+# Test dependencies:
+pytest>=7.0

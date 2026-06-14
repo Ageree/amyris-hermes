@@ -18,4 +18,32 @@ crons.interval(
   {},
 );
 
+// Reset rows stuck in "processing" by a worker that crashed mid-flight back to
+// "queued" so a healthy worker re-drains them (claimNextForUser only claims
+// "queued"). claimNextForUser's correctness DEPENDS on this reaper (design §4).
+crons.interval(
+  "reap stale processing messages",
+  { minutes: 2 },
+  internal.messages.reapStaleProcessing,
+  {},
+);
+
+// Flip free-tier containers idle past the TTL to desired="stopped" so the
+// controller stops them ($0 idle compute). Paid stays warm.
+crons.interval(
+  "reap idle fleet instances",
+  { minutes: 5 },
+  internal.fleet.reapIdleInstances,
+  {},
+);
+
+// Housekeeping: mark expired-but-still-"active" pairing tokens "expired" (consume
+// already self-checks expiry; this keeps the one-active-per-user invariant clean).
+crons.interval(
+  "expire stale pairing tokens",
+  { minutes: 30 },
+  internal.pairing.expireStaleTokens,
+  {},
+);
+
 export default crons;

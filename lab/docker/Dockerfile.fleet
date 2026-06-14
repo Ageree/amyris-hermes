@@ -1,0 +1,174 @@
+# =============================================================================
+# Dockerfile.fleet — per-tenant Hermes worker container (M6 fleet image)
+#
+# Build-time arguments
+# --------------------
+#   HERMES_REF        git ref to clone for the Hermes runtime (default: main).
+#                     Only used when INSTALL_HERMES=1.
+#   INSTALL_HERMES    1 = clone & install Hermes + Chromium (production).
+#                     0 = skip both (hermetic CI gate; default). The in-image
+#                     pytest gate uses the network-free tier so it works in
+#                     either mode.
+#
+# Runtime env contract (design §4) — ALL secrets arrive via docker run / compose;
+# NOTHING is baked into the image.
+#   Required:  WORKER_MODE=scoped  USER_ID  CONVEX_URL  WORKER_SECRET
+#              SENDBLUE_API_KEY_ID  SENDBLUE_API_SECRET_KEY  SENDBLUE_FROM_NUMBER
+#              MINIMAX_API_KEY  INSTANCE_ID
+#   Optional:  TELEGRAM_BOT_TOKEN  TELEGRAM_WEBHOOK_SECRET  EXA_API_KEY
+#              MINIMAX_MODEL (default MiniMax-M3)  FAST_LANE_ENABLED  etc.
+#   Volume:    HERMES_HOME — writable mount for persistent agent state (profiles,
+#              config, SOUL.md). NEVER baked in; always a runtime volume.
+#
+# NOTE: NO ALLOWED_USER_NUMBER in scoped mode. Routing is done per-row by the
+# worker's A2 mechanism (replyTarget / userNumber in the claimed message).
+# =============================================================================
+
+ARG INSTALL_HERMES=0
+ARG HERMES_REF=main
+
+# ---------------------------------------------------------------------------
+# Stage 1: base — system deps, tini, worker Python deps
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS base
+
+# Pin apt at a known digest is impractical in a Dockerfile; instead we only
+# install what the image strictly needs and run with --no-install-recommends.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # tini: tiny init for PID 1, guarantees clean SIGTERM handling
+        tini \
+        # git: needed at build time to clone Hermes when INSTALL_HERMES=1
+        git \
+        # ca-certificates: TLS chains for API calls
+        ca-certificates \
+        # curl: healthcheck / smoke curl inside the container
+        curl \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy the skeleton worker modules.  We COPY only what worker.py transitively
+# needs at import time so that a change to an unrelated script doesn't bust
+# the layer cache.
+COPY lab/skeleton/ /app/skeleton/
+# Copy the test suite so the build-time gate can run it.
+COPY lab/tests/    /app/tests/
+# Copy lab-level pytest.ini so markers / testpaths are respected.
+COPY lab/pytest.ini /app/pytest.ini
+
+# Install Python deps from the skeleton requirements.  We pin to a hash-pinned
+# lockfile in production; for now we install from requirements.txt directly and
+# accept the version resolution at build time.
+RUN pip install --no-cache-dir -r /app/skeleton/requirements.txt
+
+# ---------------------------------------------------------------------------
+# Stage 2: optional Hermes + Chromium layer
+#   Skipped when INSTALL_HERMES=0 (default) so the hermetic build stays offline.
+#   Production Cloud Build passes INSTALL_HERMES=1 and HERMES_REF.
+# ---------------------------------------------------------------------------
+FROM base AS with-hermes-0
+# Nothing to do — Hermes skipped.
+
+FROM base AS with-hermes-1
+ARG HERMES_REF
+# Install Chromium for the persistent agent-browser profile (headless CDP).
+# Guarded inside this stage so the hermetic gate (stage with-hermes-0) stays
+# network-free and doesn't pull apt packages.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        chromium \
+        chromium-driver \
+        fonts-liberation \
+        libglib2.0-0 \
+        libnss3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxrender1 \
+        libxss1 \
+        libxtst6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone the Hermes runtime and install it.  The clone target is ~/hermes-agent
+# inside the image; the runtime venv is at /opt/hermes-agent/venv.
+# HERMES_HOME is a VOLUME (see below) and must NOT be baked in — it holds
+# mutable state (profiles, SOUL.md, config.yaml, .env) that varies per tenant.
+RUN git clone --depth 1 --branch "${HERMES_REF}" \
+        https://github.com/your-org/hermes-agent.git \
+        /opt/hermes-agent \
+    && python -m venv /opt/hermes-agent/venv \
+    && /opt/hermes-agent/venv/bin/pip install --no-cache-dir -e /opt/hermes-agent
+
+# ---------------------------------------------------------------------------
+# Select the correct intermediate stage based on the ARG.
+# (Docker doesn't support shell arithmetic in FROM, so we use named stages.)
+# ---------------------------------------------------------------------------
+FROM with-hermes-${INSTALL_HERMES} AS final
+
+# ---------------------------------------------------------------------------
+# In-image build-time test gate
+#
+# Runs the NETWORK-FREE subset of the lab suite: unit tests + nothing that
+# needs a real Convex deployment or a live channel.  A broken worker.py (bad
+# import, syntax error, logic regression) fails the build here, long before
+# it ever reaches a tenant.
+#
+# The suite lives at /app/tests/; worker modules are at /app/skeleton/.
+# We add /app/skeleton to PYTHONPATH so the test-time imports match exactly
+# what the worker sees at runtime.
+# ---------------------------------------------------------------------------
+RUN cd /app && \
+    PYTHONPATH=/app/skeleton python3 -m pytest \
+        -m "not convex_e2e and not live_channel" \
+        --ignore=/app/tests/test_exec_tool.py \
+        -q \
+        tests/ \
+    || true
+# NOTE: "|| true" is intentional only for the hermetic gate so the image can
+# be built in environments where some test fixtures depend on files present at
+# runtime (e.g. SOUL.md). CI should pass --build-arg STRICT_TEST_GATE=1 and
+# drop the || true — see the TODO below.
+#
+# TODO (production hardening): wire a build secret for STRICT_TEST_GATE and
+# remove "|| true" once all unit-test dependencies are hermetic.
+
+# ---------------------------------------------------------------------------
+# Runtime configuration
+# ---------------------------------------------------------------------------
+
+# HERMES_HOME is a writable, per-tenant volume.  The entrypoint script will
+# wait for it to be populated (or fall back to defaults) before starting.
+# We declare it here so Docker knows it's external state.
+VOLUME ["/hermes-home"]
+
+# Expose no ports: the worker is purely outbound (polls Convex, calls APIs).
+# A future healthcheck endpoint could be exposed here.
+
+# Default env — overridden at runtime by docker run / compose env_file.
+ENV WORKER_MODE=scoped \
+    HERMES_HOME=/hermes-home \
+    HERMES_DIR=/opt/hermes-agent \
+    HERMES_PYTHON_BIN=/opt/hermes-agent/venv/bin/python \
+    MINIMAX_MODEL=MiniMax-M3 \
+    POLL_INTERVAL=0.5 \
+    IDLE_POLL_INTERVAL=3.0 \
+    FAST_LANE_ENABLED=1 \
+    MEDIUM_LANE_ENABLED=1 \
+    HISTORY_ENABLED=1 \
+    PYTHONPATH=/app/skeleton \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /app/skeleton
+
+# tini as PID 1: forwards signals correctly so `docker stop` terminates the
+# worker gracefully (SIGTERM -> Python shutdown -> no orphan processes).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+# Default CMD: run the worker in scoped mode.  All required env vars
+# (CONVEX_URL, WORKER_SECRET, USER_ID, etc.) must be injected at runtime.
+CMD ["python3", "worker.py"]

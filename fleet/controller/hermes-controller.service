@@ -1,0 +1,22 @@
+[Unit]
+Description=Hermes Fleet Controller
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+User=hermes-fleet
+WorkingDirectory=/opt/hermes-fleet/controller
+EnvironmentFile=/etc/hermes-fleet/controller.env
+ExecStart=/usr/bin/python3 /opt/hermes-fleet/controller/controller.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hermes-controller
+
+# Prevent the service from acquiring new privileges
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

@@ -23,6 +23,7 @@ import type * as billing_provider from "../billing/provider.js";
 import type * as billing_stub from "../billing/stub.js";
 import type * as billing_tiers from "../billing/tiers.js";
 import type * as crons from "../crons.js";
+import type * as fleet from "../fleet.js";
 import type * as http from "../http.js";
 import type * as intents from "../intents.js";
 import type * as lib_auth from "../lib/auth.js";
@@ -55,6 +56,7 @@ declare const fullApi: ApiFromModules<{
   "billing/stub": typeof billing_stub;
   "billing/tiers": typeof billing_tiers;
   crons: typeof crons;
+  fleet: typeof fleet;
   http: typeof http;
   intents: typeof intents;
   "lib/auth": typeof lib_auth;

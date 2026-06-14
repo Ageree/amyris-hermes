@@ -1,5 +1,6 @@
 import { mutation, internalMutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { internal } from "./_generated/api";
 import { assertWorker, channelValidator } from "./lib/auth";
 
 // Durable inbound queue. Sendblue / Telegram webhooks enqueue here; the brain
@@ -158,6 +159,43 @@ export const claimNextForUser = mutation({
       text: next.text,
       mediaUrl: next.mediaUrl ?? null,
     };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// reapStaleProcessing (cron, internal) — a worker that crashed AFTER claiming but
+// BEFORE complete/fail leaves a row stuck in "processing" forever (claimNextForUser
+// only ever claims "queued"). This resets rows whose claimedAt is older than
+// STALE_PROCESSING_MS back to "queued" so a healthy worker re-drains them. Index
+// scan by_status(status="processing"), JS predicate on claimedAt (bounded take,
+// not a table .filter), paginate via self-reschedule. At-most-once delivery still
+// holds: the original worker's eventual complete/fail no-ops a re-queued row only
+// if it races, which idempotency on (channel,handle) and the done/error terminal
+// states absorb.
+// ---------------------------------------------------------------------------
+const STALE_PROCESSING_MS = 5 * 60_000;
+const REAP_BATCH = 500;
+
+export const reapStaleProcessing = internalMutation({
+  args: {},
+  returns: v.object({ requeued: v.number() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const processing = await ctx.db
+      .query("messages")
+      .withIndex("by_status", (q) => q.eq("status", "processing"))
+      .take(REAP_BATCH);
+    let requeued = 0;
+    for (const m of processing) {
+      const claimedAt = m.claimedAt ?? m.receivedAt;
+      if (now - claimedAt < STALE_PROCESSING_MS) continue;
+      await ctx.db.patch(m._id, { status: "queued", claimedAt: undefined });
+      requeued++;
+    }
+    if (processing.length === REAP_BATCH) {
+      await ctx.scheduler.runAfter(0, internal.messages.reapStaleProcessing, {});
+    }
+    return { requeued };
   },
 });
 

@@ -1,0 +1,87 @@
+# =============================================================================
+# cloudbuild.fleet.yaml — GCP Cloud Build config for the fleet worker image
+#
+# Usage (operator-run, NOT executed by CI automatically):
+#   gcloud builds submit --config lab/docker/cloudbuild.fleet.yaml \
+#       --substitutions SHORT_SHA=$(git rev-parse --short HEAD) .
+#
+# Or trigger via a Cloud Build trigger on push to main with:
+#   _HERMES_REF = main
+#   _INSTALL_HERMES = 1
+#
+# Substitutions
+# -------------
+#   $PROJECT_ID    — auto-populated by Cloud Build
+#   $SHORT_SHA     — git short SHA, auto-populated by Cloud Build triggers;
+#                    pass manually for `gcloud builds submit` calls
+#   $_HERMES_REF   — git ref of the Hermes runtime to bake in (default: main)
+#   $_INSTALL_HERMES — 1 = full production image with Hermes + Chromium;
+#                      0 = hermetic gate only (default, safe for PR checks)
+#
+# Registry path: us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet
+# Two tags are pushed: :<SHORT_SHA> (immutable, for rollbacks) and :latest
+# (floating, for convenience).  Deployments should pin the SHA tag.
+# =============================================================================
+
+substitutions:
+  _HERMES_REF: "main"
+  _INSTALL_HERMES: "1"
+  # SHORT_SHA is injected automatically by Cloud Build triggers; you must pass
+  # it explicitly for manual `gcloud builds submit` invocations.
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 1 — Build the fleet image
+  # Passes HERMES_REF and INSTALL_HERMES as build-args so the Dockerfile can
+  # conditionally clone the Hermes runtime.  The in-image pytest gate runs
+  # inside the build as a RUN step, so a red gate fails the build here.
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-fleet-image"
+    args:
+      - build
+      - --file
+      - lab/docker/Dockerfile.fleet
+      - --build-arg
+      - "HERMES_REF=${_HERMES_REF}"
+      - --build-arg
+      - "INSTALL_HERMES=${_INSTALL_HERMES}"
+      # Tag with the immutable SHA first; we'll add :latest in the push step.
+      - --tag
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
+      - --tag
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+      # Build context is the REPO ROOT so the Dockerfile can COPY lab/skeleton.
+      - .
+    # Give the build enough headroom for apt + pip + Hermes clone + pytest gate.
+    timeout: "1200s"
+
+  # ---------------------------------------------------------------------------
+  # Step 2 — Push SHA-tagged image (immutable; used for rollbacks)
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-sha-tag"
+    waitFor: ["build-fleet-image"]
+    args:
+      - push
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
+
+  # ---------------------------------------------------------------------------
+  # Step 3 — Push :latest (floating; for convenience — pin SHA in deployments)
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-latest-tag"
+    waitFor: ["build-fleet-image"]
+    args:
+      - push
+      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+
+# Images to register with Cloud Build for vulnerability scanning + provenance.
+images:
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
+  - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  # Larger machine gives better pip/apt parallelism and keeps the Hermes clone fast.
+  machineType: "E2_HIGHCPU_8"

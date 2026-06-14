@@ -56,7 +56,8 @@ export default defineSchema({
   })
     .index("by_token", ["token"])
     .index("by_code", ["code"])
-    .index("by_user_channel", ["userId", "channel"]),
+    .index("by_user_channel", ["userId", "channel"])
+    .index("by_status_expiry", ["status", "expiresAt"]), // cron: expire stale active tokens
 
   // Durable inbound queue — EVOLVED. userId/channel/replyTarget added (optional
   // during migration, required after backfill). userNumber kept for back-compat.

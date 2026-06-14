@@ -1,0 +1,183 @@
+# =============================================================================
+# fleet/local/docker-compose.yml — two-tenant local smoke harness
+#
+# Proves the core M6 invariant OFFLINE:
+#   "alice's worker only processes alice's messages and replies to alice's
+#    address; bob's worker only processes bob's messages and replies to bob's
+#    address — ZERO cross-contamination."
+#
+# Architecture
+# ------------
+#   mock_outbound — fake Convex queue + outbound sink (stdlib, no real API)
+#   worker_alice  — scoped worker container (USER_ID=u_alice)
+#   worker_bob    — scoped worker container (USER_ID=u_bob)
+#   seed          — enqueues one msg per tenant, waits, asserts routing, exits
+#
+# Usage
+# -----
+#   # Build image (requires docker daemon + repo root as build context)
+#   docker compose -f fleet/local/docker-compose.yml build
+#
+#   # Run the smoke test; compose exits with seed's exit code
+#   docker compose -f fleet/local/docker-compose.yml up \
+#       --abort-on-container-exit --exit-code-from seed
+#
+#   # Verify the acceptance criterion (both log lines must appear):
+#   docker compose -f fleet/local/docker-compose.yml logs mock_outbound \
+#       | grep -E 'alice->alice|bob->bob'
+#
+# Secrets
+# -------
+#   Copy fleet/local/.env.example to fleet/local/.env and fill in real values
+#   for a live run. The harness works with the placeholder values in .env.example
+#   for the mock-only (offline) mode — workers hit the fake Convex, not real APIs.
+#
+# =============================================================================
+
+version: "3.9"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # mock_outbound — fake Convex queue + outbound reply sink
+  # Workers call this instead of real Convex; it records and validates routing.
+  # ---------------------------------------------------------------------------
+  mock_outbound:
+    image: python:3.12-slim
+    command: python /app/mock_outbound.py
+    volumes:
+      - ./mock_outbound.py:/app/mock_outbound.py:ro
+    environment:
+      MOCK_HOST: "0.0.0.0"
+      MOCK_PORT: "8800"
+      WORKER_SECRET: "${WORKER_SECRET:-test-secret}"
+    ports:
+      - "8800:8800"
+    healthcheck:
+      test: ["CMD", "python3", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:8800/health')"]
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 3s
+
+  # ---------------------------------------------------------------------------
+  # worker_alice — scoped to u_alice; must only claim/reply to alice's rows
+  # ---------------------------------------------------------------------------
+  worker_alice:
+    build:
+      context: ../..          # repo root so Dockerfile can COPY lab/skeleton/
+      dockerfile: lab/docker/Dockerfile.fleet
+      args:
+        INSTALL_HERMES: "0"   # offline build: skip Hermes clone
+    # Override the worker's CMD to use the mock Convex client shim.
+    # In offline mode workers use a patched client that talks to mock_outbound
+    # instead of real Convex.  See CONVEX_URL below.
+    environment:
+      # Fleet scoping — this container is pinned to a single tenant.
+      WORKER_MODE: "scoped"
+      USER_ID: "u_alice"
+      INSTANCE_ID: "local-alice-001"
+      # Point at the mock Convex (mock_outbound acts as the Convex HTTP API).
+      # The ConvexClient in the skeleton uses CONVEX_URL; mock_outbound exposes
+      # the same mutation paths.
+      CONVEX_URL: "http://mock_outbound:8800"
+      WORKER_SECRET: "${WORKER_SECRET:-test-secret}"
+      # Shared channel credentials (placeholder values for offline mode).
+      SENDBLUE_API_KEY_ID: "${SENDBLUE_API_KEY_ID:-placeholder-key-id}"
+      SENDBLUE_API_SECRET_KEY: "${SENDBLUE_API_SECRET_KEY:-placeholder-secret}"
+      SENDBLUE_FROM_NUMBER: "${SENDBLUE_FROM_NUMBER:-+10000000000}"
+      # MiniMax (fast lane disabled in offline mode — no real API key needed).
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY:-}"
+      MINIMAX_MODEL: "MiniMax-M3"
+      FAST_LANE_ENABLED: "0"        # disable fast lane so no real API calls
+      MEDIUM_LANE_ENABLED: "0"
+      HISTORY_ENABLED: "0"          # no Convex history in mock mode
+      QUOTA_ENABLED: "0"            # no quota in offline mode
+      TYPING_ENABLED: "0"           # typing indicator hits Sendblue; off for mock
+      TELEGRAM_BOT_TOKEN: ""        # iMessage-only in local harness
+      EXA_API_KEY: "${EXA_API_KEY:-}"
+      HERMES_HOME: "/hermes-home"
+      # In offline mode Hermes is not installed; point at a no-op stub.
+      HERMES_DIR: "/hermes-home"
+      HERMES_PYTHON_BIN: "/usr/bin/python3"
+      ALLOWED_USER_NUMBER: "+1alice555"  # legacy fallback only (scoped mode uses row.replyTarget)
+      POLL_INTERVAL: "0.5"
+      IDLE_POLL_INTERVAL: "1.0"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - alice_hermes_home:/hermes-home
+    depends_on:
+      mock_outbound:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # worker_bob — scoped to u_bob; must only claim/reply to bob's rows
+  # ---------------------------------------------------------------------------
+  worker_bob:
+    build:
+      context: ../..
+      dockerfile: lab/docker/Dockerfile.fleet
+      args:
+        INSTALL_HERMES: "0"
+    environment:
+      WORKER_MODE: "scoped"
+      USER_ID: "u_bob"
+      INSTANCE_ID: "local-bob-001"
+      CONVEX_URL: "http://mock_outbound:8800"
+      WORKER_SECRET: "${WORKER_SECRET:-test-secret}"
+      SENDBLUE_API_KEY_ID: "${SENDBLUE_API_KEY_ID:-placeholder-key-id}"
+      SENDBLUE_API_SECRET_KEY: "${SENDBLUE_API_SECRET_KEY:-placeholder-secret}"
+      SENDBLUE_FROM_NUMBER: "${SENDBLUE_FROM_NUMBER:-+10000000000}"
+      MINIMAX_API_KEY: "${MINIMAX_API_KEY:-}"
+      MINIMAX_MODEL: "MiniMax-M3"
+      FAST_LANE_ENABLED: "0"
+      MEDIUM_LANE_ENABLED: "0"
+      HISTORY_ENABLED: "0"
+      QUOTA_ENABLED: "0"
+      TYPING_ENABLED: "0"
+      TELEGRAM_BOT_TOKEN: ""
+      EXA_API_KEY: "${EXA_API_KEY:-}"
+      HERMES_HOME: "/hermes-home"
+      HERMES_DIR: "/hermes-home"
+      HERMES_PYTHON_BIN: "/usr/bin/python3"
+      ALLOWED_USER_NUMBER: "+1bob999"
+      POLL_INTERVAL: "0.5"
+      IDLE_POLL_INTERVAL: "1.0"
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - bob_hermes_home:/hermes-home
+    depends_on:
+      mock_outbound:
+        condition: service_healthy
+    restart: "no"
+
+  # ---------------------------------------------------------------------------
+  # seed — enqueues one message per tenant, waits for both to be processed,
+  # triggers the shutdown assertion on mock_outbound, exits with that result.
+  # docker-compose --exit-code-from seed propagates its exit code to the shell.
+  # ---------------------------------------------------------------------------
+  seed:
+    image: python:3.12-slim
+    command: python /app/seed.py
+    volumes:
+      - ./seed.py:/app/seed.py:ro
+    environment:
+      MOCK_HOST: "mock_outbound"
+      MOCK_PORT: "8800"
+      WORKER_SECRET: "${WORKER_SECRET:-test-secret}"
+      SEED_TIMEOUT: "90"
+      PYTHONUNBUFFERED: "1"
+    depends_on:
+      mock_outbound:
+        condition: service_healthy
+    restart: "no"
+
+# ---------------------------------------------------------------------------
+# Named volumes — one per tenant; isolated, writable, never shared.
+# In production these are GCS-backed or per-instance ephemeral volumes.
+# ---------------------------------------------------------------------------
+volumes:
+  alice_hermes_home:
+  bob_hermes_home:
