@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
+import { auth } from "./auth";
 
 const http = httpRouter();
 
@@ -53,15 +54,53 @@ http.route({
     const userNumber = String(payload?.number ?? "").trim();
     const handle = String(payload?.message_handle ?? "");
     if (!text || !userNumber || !handle) return jsonOk({ ignored: true });
+    const mediaUrl = payload?.media_url ? String(payload.media_url) : undefined;
 
+    // "pair <code>" → redeem an iMessage pairing token (binds this sender's number
+    // to the tenant who minted it). Open to ANY sender on the shared number — the
+    // code is single-use + 15-min TTL + cross-user-rejected, so a stranger can't
+    // hijack a binding. (Per-number failed-attempt rate-limiting is an M7 hardening.)
+    const pairMatch = text.match(/^pair\s+([a-z2-9]{6})$/i);
+    if (pairMatch) {
+      await ctx.runMutation(internal.pairing.redeemImessage, {
+        code: pairMatch[1],
+        address: userNumber,
+      });
+      return jsonOk({ ok: true });
+    }
+
+    // Operator (user #0) stays on the LEGACY enqueue path (userId undefined) so his
+    // running claimNext worker keeps draining — the container cutover to
+    // claimNextForUser is M6 (design §10 step 8). Do NOT tag his rows here, or the
+    // legacy worker (which claims only userId===undefined) would go dark.
     const allowed = process.env.ALLOWED_USER_NUMBER ?? "";
-    if (allowed && userNumber !== allowed) return jsonOk({ ignored: true });
+    if (allowed && userNumber === allowed) {
+      await ctx.runMutation(internal.messages.enqueue, {
+        handle,
+        userNumber,
+        text,
+        mediaUrl,
+      });
+      return jsonOk({ ok: true });
+    }
+
+    // Multi-tenant resolution: a VERIFIED (imessage, number) binding → tenant. The
+    // enqueued row carries userId/channel/replyTarget so the fleet worker claims
+    // it via claimNextForUser and replies to the sender's OWN number (A1/A2).
+    const resolved = await ctx.runQuery(
+      internal.lib.identity.resolveUserByAddress,
+      { channel: "imessage", address: userNumber },
+    );
+    if (!resolved) return jsonOk({ ignored: true }); // unknown sender → drop (no budget burn)
 
     await ctx.runMutation(internal.messages.enqueue, {
       handle,
+      userId: resolved.userId,
+      channel: "imessage",
+      replyTarget: userNumber,
       userNumber,
       text,
-      mediaUrl: payload?.media_url ? String(payload.media_url) : undefined,
+      mediaUrl,
     });
     return jsonOk({ ok: true });
   }),
@@ -144,5 +183,9 @@ http.route({
     return jsonOk({ ok: true });
   }),
 });
+
+// Convex Auth sign-in / OAuth-callback / token routes (design §9). Appended to
+// the SAME router so the always-on Sendblue + Telegram webhooks above keep working.
+auth.addHttpRoutes(http);
 
 export default http;

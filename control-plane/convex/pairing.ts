@@ -46,10 +46,38 @@ function _genCode(): string {
 }
 
 // ---------------------------------------------------------------------------
-// issuePairingToken — mint a fresh single-use token+code for (user,channel),
-// superseding any still-active one. Returns the token/code/expiry the connect UI
-// renders (deep-link for Telegram, copyable code for iMessage).
+// issuePairingTokenImpl — mint a fresh single-use token+code for (user,channel),
+// superseding any still-active one. Plain helper so BOTH the internalMutation and
+// the getAuthUserId-gated app wrapper (app/channels:createPairingToken) write in
+// ONE transaction without a nested ctx.runMutation. Returns the token/code/expiry
+// the connect UI renders (deep-link for Telegram, copyable code for iMessage).
 // ---------------------------------------------------------------------------
+export async function issuePairingTokenImpl(
+  ctx: any,
+  userId: any,
+  channel: "imessage" | "telegram",
+): Promise<{ token: string; code: string; expiresAt: number; channel: "imessage" | "telegram" }> {
+  const now = Date.now();
+
+  // Supersede any still-active token for this (user,channel) — only one live at
+  // a time (index-scoped read, not a table scan).
+  const prior = await ctx.db
+    .query("pairingTokens")
+    .withIndex("by_user_channel", (q: any) => q.eq("userId", userId).eq("channel", channel))
+    .collect();
+  for (const p of prior) {
+    if (p.status === "active") await ctx.db.patch(p._id, { status: "superseded" });
+  }
+
+  const token = _genToken();
+  const code = _genCode();
+  const expiresAt = now + TOKEN_TTL_MS;
+  await ctx.db.insert("pairingTokens", {
+    userId, channel, token, code, status: "active", expiresAt, createdAt: now,
+  });
+  return { token, code, expiresAt, channel };
+}
+
 export const issuePairingToken = internalMutation({
   args: { userId: v.id("users"), channel: channelValidator },
   returns: v.object({
@@ -59,25 +87,7 @@ export const issuePairingToken = internalMutation({
     channel: channelValidator,
   }),
   handler: async (ctx, { userId, channel }) => {
-    const now = Date.now();
-
-    // Supersede any still-active token for this (user,channel) — only one live at
-    // a time (index-scoped read, not a table scan).
-    const prior = await ctx.db
-      .query("pairingTokens")
-      .withIndex("by_user_channel", (q) => q.eq("userId", userId).eq("channel", channel))
-      .collect();
-    for (const p of prior) {
-      if (p.status === "active") await ctx.db.patch(p._id, { status: "superseded" });
-    }
-
-    const token = _genToken();
-    const code = _genCode();
-    const expiresAt = now + TOKEN_TTL_MS;
-    await ctx.db.insert("pairingTokens", {
-      userId, channel, token, code, status: "active", expiresAt, createdAt: now,
-    });
-    return { token, code, expiresAt, channel };
+    return await issuePairingTokenImpl(ctx, userId, channel);
   },
 });
 
@@ -138,6 +148,21 @@ async function _redeem(
   return { ok: true, userId: row.userId };
 }
 
+// Plain redeem impls (exported so the double-gated test wrappers in testing.ts can
+// drive the EXACT redeem path over HTTP — internalMutations aren't HTTP-callable).
+export async function redeemTelegramImpl(ctx: any, token: string, address: string) {
+  return await _redeem(ctx, "telegram", address, () =>
+    ctx.db.query("pairingTokens").withIndex("by_token", (q: any) => q.eq("token", token)).first(),
+  );
+}
+
+export async function redeemImessageImpl(ctx: any, code: string, address: string) {
+  const norm = (code || "").trim().toUpperCase();
+  return await _redeem(ctx, "imessage", address, () =>
+    ctx.db.query("pairingTokens").withIndex("by_code", (q: any) => q.eq("code", norm)).first(),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // redeemTelegram — /start <token>. Binds (telegram, chat.id) -> userId.
 // ---------------------------------------------------------------------------
@@ -150,9 +175,7 @@ export const redeemTelegram = internalMutation({
   },
   returns: redeemReturns,
   handler: async (ctx, { token, address }) => {
-    return await _redeem(ctx, "telegram", address, () =>
-      ctx.db.query("pairingTokens").withIndex("by_token", (q: any) => q.eq("token", token)).first(),
-    );
+    return await redeemTelegramImpl(ctx, token, address);
   },
 });
 
@@ -163,9 +186,6 @@ export const redeemImessage = internalMutation({
   args: { code: v.string(), address: v.string() },
   returns: redeemReturns,
   handler: async (ctx, { code, address }) => {
-    const norm = (code || "").trim().toUpperCase();
-    return await _redeem(ctx, "imessage", address, () =>
-      ctx.db.query("pairingTokens").withIndex("by_code", (q: any) => q.eq("code", norm)).first(),
-    );
+    return await redeemImessageImpl(ctx, code, address);
   },
 });

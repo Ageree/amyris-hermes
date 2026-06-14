@@ -1,6 +1,11 @@
 import { mutation } from "./_generated/server";
 import { v } from "convex/values";
-import { assertWorker } from "./lib/auth";
+import { assertWorker, channelValidator } from "./lib/auth";
+import {
+  issuePairingTokenImpl,
+  redeemTelegramImpl,
+  redeemImessageImpl,
+} from "./pairing";
 
 // ---------------------------------------------------------------------------
 // TEST-ONLY seeding helpers for the convex_e2e integration tier
@@ -60,6 +65,74 @@ export const seedTwoTenants = mutation({
       status: "queued", receivedAt: now + 1,
     });
     return { userA, userB, msgA, msgB, textA, textB };
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Pairing test wrappers (M4, convex_e2e tier — test_pairing.py). Double-gated
+// like the seeders (WORKER_SECRET + ALLOW_TEST_SEED), so they're inert in prod.
+// They drive the EXACT pairing impls over HTTP to prove single-use / expiry /
+// wrong-channel / cross-user-reject against the live indexes — properties mocks
+// can't catch. testExpirePairing back-dates a token to simulate TTL elapse.
+// ---------------------------------------------------------------------------
+const redeemResult = v.object({
+  ok: v.boolean(),
+  userId: v.union(v.id("users"), v.null()),
+  reason: v.optional(v.string()),
+  idempotent: v.optional(v.boolean()),
+});
+
+export const testIssuePairing = mutation({
+  args: { workerSecret: v.string(), userId: v.id("users"), channel: channelValidator },
+  returns: v.object({
+    token: v.string(),
+    code: v.string(),
+    expiresAt: v.number(),
+    channel: channelValidator,
+  }),
+  handler: async (ctx, { workerSecret, userId, channel }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    return await issuePairingTokenImpl(ctx, userId, channel);
+  },
+});
+
+export const testRedeemTelegram = mutation({
+  args: { workerSecret: v.string(), token: v.string(), address: v.string() },
+  returns: redeemResult,
+  handler: async (ctx, { workerSecret, token, address }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    return await redeemTelegramImpl(ctx, token, address);
+  },
+});
+
+export const testRedeemImessage = mutation({
+  args: { workerSecret: v.string(), code: v.string(), address: v.string() },
+  returns: redeemResult,
+  handler: async (ctx, { workerSecret, code, address }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    return await redeemImessageImpl(ctx, code, address);
+  },
+});
+
+// Back-date a token's expiry (and re-activate it) to simulate TTL elapse without
+// a real 15-minute wait. Looks up by token OR code.
+export const testExpirePairing = mutation({
+  args: { workerSecret: v.string(), token: v.optional(v.string()), code: v.optional(v.string()) },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, { workerSecret, token, code }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    const row = token
+      ? await ctx.db.query("pairingTokens").withIndex("by_token", (q) => q.eq("token", token)).first()
+      : code
+        ? await ctx.db.query("pairingTokens").withIndex("by_code", (q) => q.eq("code", code)).first()
+        : null;
+    if (!row) return { ok: false };
+    await ctx.db.patch(row._id, { status: "active", expiresAt: Date.now() - 1000 });
+    return { ok: true };
   },
 });
 

@@ -8,11 +8,25 @@
  * @module
  */
 
+import type * as ResendOTP from "../ResendOTP.js";
+import type * as admin from "../admin.js";
+import type * as app_account from "../app/account.js";
+import type * as app_authGate from "../app/authGate.js";
+import type * as app_channels from "../app/channels.js";
+import type * as app_tiers from "../app/tiers.js";
+import type * as app_upgrade from "../app/upgrade.js";
+import type * as app_usage from "../app/usage.js";
+import type * as auth from "../auth.js";
+import type * as billing_grant from "../billing/grant.js";
+import type * as billing_provider from "../billing/provider.js";
+import type * as billing_stub from "../billing/stub.js";
+import type * as billing_tiers from "../billing/tiers.js";
 import type * as http from "../http.js";
 import type * as intents from "../intents.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_identity from "../lib/identity.js";
 import type * as messages from "../messages.js";
+import type * as migrations from "../migrations.js";
 import type * as pairing from "../pairing.js";
 import type * as testing from "../testing.js";
 
@@ -23,11 +37,25 @@ import type {
 } from "convex/server";
 
 declare const fullApi: ApiFromModules<{
+  ResendOTP: typeof ResendOTP;
+  admin: typeof admin;
+  "app/account": typeof app_account;
+  "app/authGate": typeof app_authGate;
+  "app/channels": typeof app_channels;
+  "app/tiers": typeof app_tiers;
+  "app/upgrade": typeof app_upgrade;
+  "app/usage": typeof app_usage;
+  auth: typeof auth;
+  "billing/grant": typeof billing_grant;
+  "billing/provider": typeof billing_provider;
+  "billing/stub": typeof billing_stub;
+  "billing/tiers": typeof billing_tiers;
   http: typeof http;
   intents: typeof intents;
   "lib/auth": typeof lib_auth;
   "lib/identity": typeof lib_identity;
   messages: typeof messages;
+  migrations: typeof migrations;
   pairing: typeof pairing;
   testing: typeof testing;
 }>;
