@@ -1,10 +1,19 @@
-// TEMP foundation-validation stub — replaced by the real marketing landing.
+import { Nav } from "@/components/marketing/Nav";
+import { Hero } from "@/components/marketing/Hero";
+import { TierGrid } from "@/components/marketing/TierGrid";
+import { Footer } from "@/components/marketing/Footer";
+
+// Public marketing landing — no auth. All sections are server components; the
+// only interactivity is plain <Link> navigation to /signin.
 export default function Home() {
   return (
-    <main className="mx-auto flex min-h-dvh max-w-2xl flex-col items-center justify-center gap-4 px-6 text-center">
-      <span className="font-mono text-lime">hermes</span>
-      <h1 className="text-3xl font-medium lowercase">your assistant, on imessage &amp; telegram</h1>
-      <p className="text-muted">foundation ok — pages land next.</p>
-    </main>
+    <div className="flex min-h-dvh flex-col">
+      <Nav />
+      <main className="flex-1">
+        <Hero />
+        <TierGrid />
+      </main>
+      <Footer />
+    </div>
   );
 }

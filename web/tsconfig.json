@@ -16,6 +16,7 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"],
+      "@cp/api": ["../control-plane/convex/_generated/api"],
       "@cp/*": ["../control-plane/convex/*"]
     }
   },
