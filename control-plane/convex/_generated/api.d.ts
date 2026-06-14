@@ -10,7 +10,10 @@
 
 import type * as http from "../http.js";
 import type * as intents from "../intents.js";
+import type * as lib_auth from "../lib/auth.js";
+import type * as lib_identity from "../lib/identity.js";
 import type * as messages from "../messages.js";
+import type * as testing from "../testing.js";
 
 import type {
   ApiFromModules,
@@ -21,7 +24,10 @@ import type {
 declare const fullApi: ApiFromModules<{
   http: typeof http;
   intents: typeof intents;
+  "lib/auth": typeof lib_auth;
+  "lib/identity": typeof lib_identity;
   messages: typeof messages;
+  testing: typeof testing;
 }>;
 
 /**

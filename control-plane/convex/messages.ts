@@ -1,47 +1,103 @@
 import { mutation, internalMutation, query } from "./_generated/server";
 import { v } from "convex/values";
+import { assertWorker, channelValidator } from "./lib/auth";
 
-// Shared-secret gate for the worker (brain) facing functions. The brain passes
-// WORKER_SECRET on every call; without it these public functions reject. (The
-// HTTP webhook uses its own path-token secret — see http.ts.)
-function assertWorker(provided: string) {
-  const expected = process.env.WORKER_SECRET ?? "";
-  if (!expected || provided !== expected) {
-    throw new Error("unauthorized worker");
-  }
-}
+// Durable inbound queue. Sendblue / Telegram webhooks enqueue here; the brain
+// (Hermes + browser) polls claimNext / claimNextForUser, processes, then
+// complete / fail. Because the queue is durable, messages are never lost while
+// the brain is offline (A3). All worker-facing functions gate on the shared
+// WORKER_SECRET argument (A4) via lib/auth.assertWorker.
 
-// Called only by the HTTP webhook (internal — not publicly callable).
-// Idempotent on Sendblue's message_handle.
+// ---------------------------------------------------------------------------
+// enqueue (internal — called only by the HTTP webhooks / resolveIntent).
+// Idempotent on (channel, handle) via by_channel_handle, falling back to the
+// legacy by_handle when channel is absent (pre-migration / operator rows). New
+// userId/channel/replyTarget are optional during the additive migration window;
+// they tighten to required after backfill (design §10 step 9).
+// ---------------------------------------------------------------------------
 export const enqueue = internalMutation({
   args: {
     handle: v.string(),
+    userId: v.optional(v.id("users")),
+    channel: v.optional(channelValidator),
+    replyTarget: v.optional(v.string()),
     userNumber: v.string(),
     text: v.string(),
     mediaUrl: v.optional(v.string()),
   },
+  returns: v.id("messages"),
   handler: async (ctx, args) => {
-    const existing = await ctx.db
-      .query("messages")
-      .withIndex("by_handle", (q) => q.eq("handle", args.handle))
-      .first();
+    // Dedup keyed by (channel, handle) when channel is known (Telegram update_ids
+    // and Sendblue handles share no namespace, so the compound key is the precise
+    // idempotency unit); fall back to the global by_handle for channel-less rows.
+    const existing = args.channel
+      ? await ctx.db
+          .query("messages")
+          .withIndex("by_channel_handle", (q) =>
+            q.eq("channel", args.channel).eq("handle", args.handle),
+          )
+          .first()
+      : await ctx.db
+          .query("messages")
+          .withIndex("by_handle", (q) => q.eq("handle", args.handle))
+          .first();
     if (existing) return existing._id; // duplicate delivery — ignore
+
     return await ctx.db.insert("messages", {
-      ...args,
+      handle: args.handle,
+      userId: args.userId,
+      channel: args.channel,
+      replyTarget: args.replyTarget,
+      userNumber: args.userNumber,
+      text: args.text,
+      mediaUrl: args.mediaUrl,
       status: "queued",
       receivedAt: Date.now(),
     });
   },
 });
 
-// Brain polls this: atomically claim the oldest queued message.
+// Shared return shape for a claimed message. mediaUrl/channel/replyTarget/userId
+// are nullable because legacy rows predate them; the worker defaults channel ->
+// "imessage" and replyTarget -> userNumber (A2: reply by the message's OWN
+// address, never a global constant).
+const claimReturns = v.union(
+  v.null(),
+  v.object({
+    id: v.id("messages"),
+    handle: v.string(),
+    userId: v.union(v.id("users"), v.null()),
+    channel: v.union(channelValidator, v.null()),
+    replyTarget: v.string(),
+    userNumber: v.string(),
+    text: v.string(),
+    mediaUrl: v.union(v.string(), v.null()),
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// claimNext — KEPT for the operator/legacy launchd worker. Scoped to UNASSIGNED
+// (userId === undefined) queued rows via by_status_user, NOT every queued row.
+// Rationale (design §10 cutover safety): once the fleet starts enqueuing tenant
+// rows (userId set) into the SAME deployment while the legacy global worker is
+// still running, an unscoped claimNext would STEAL another tenant's message and
+// reply to the operator (A2 violation). Restricting to userId===undefined means
+// the legacy worker only ever drains the operator's own (un-backfilled) rows;
+// tenant rows are reachable solely via claimNextForUser. The operator's 38 live
+// rows are all userId-undefined, so behavior for him is unchanged. Same
+// signature ({workerSecret}) — the brain contract is preserved. Removed at the
+// final tighten step (design §10 step 9), after the operator is backfilled.
+// ---------------------------------------------------------------------------
 export const claimNext = mutation({
   args: { workerSecret: v.string() },
+  returns: claimReturns,
   handler: async (ctx, { workerSecret }) => {
     assertWorker(workerSecret);
     const next = await ctx.db
       .query("messages")
-      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .withIndex("by_status_user", (q) =>
+        q.eq("status", "queued").eq("userId", undefined),
+      )
       .order("asc")
       .first();
     if (!next) return null;
@@ -49,6 +105,9 @@ export const claimNext = mutation({
     return {
       id: next._id,
       handle: next.handle,
+      userId: next.userId ?? null,
+      channel: next.channel ?? null,
+      replyTarget: next.replyTarget ?? next.userNumber,
       userNumber: next.userNumber,
       text: next.text,
       mediaUrl: next.mediaUrl ?? null,
@@ -56,45 +115,119 @@ export const claimNext = mutation({
   },
 });
 
+// ---------------------------------------------------------------------------
+// claimNextForUser — NEW (fleet). A scoped container (USER_ID pinned) claims only
+// ITS user's oldest queued row via the by_status_user index — even with the first-
+// cut single global WORKER_SECRET, server-side userId-scoping means a worker can
+// only ever touch its own tenant's rows (design §8). Atomic patch to "processing"
+// gives at-most-once claim (no double reply if old+new workers overlap during
+// cutover). Bumps agentInstances.lastActiveAt so the idle-reaper keeps it warm.
+// ---------------------------------------------------------------------------
+export const claimNextForUser = mutation({
+  args: { workerSecret: v.string(), userId: v.id("users") },
+  returns: claimReturns,
+  handler: async (ctx, { workerSecret, userId }) => {
+    assertWorker(workerSecret);
+    const next = await ctx.db
+      .query("messages")
+      .withIndex("by_status_user", (q) =>
+        q.eq("status", "queued").eq("userId", userId),
+      )
+      .order("asc")
+      .first();
+    if (!next) return null;
+    await ctx.db.patch(next._id, { status: "processing", claimedAt: Date.now() });
+
+    // Idle-reap clock: bump the user's instance lastActiveAt (one row per user via
+    // by_user). Best-effort — a missing instance row (pre-fleet) is not an error.
+    const instance = await ctx.db
+      .query("agentInstances")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (instance) {
+      await ctx.db.patch(instance._id, { lastActiveAt: Date.now() });
+    }
+
+    return {
+      id: next._id,
+      handle: next.handle,
+      userId: next.userId ?? null,
+      channel: next.channel ?? null,
+      replyTarget: next.replyTarget ?? next.userNumber,
+      userNumber: next.userNumber,
+      text: next.text,
+      mediaUrl: next.mediaUrl ?? null,
+    };
+  },
+});
+
+// complete / fail — UNCHANGED signatures (live brain contract). Only a returns
+// validator is added (it returns nothing; v.null() encodes "no return value").
 export const complete = mutation({
   args: { workerSecret: v.string(), id: v.id("messages"), reply: v.string() },
+  returns: v.null(),
   handler: async (ctx, { workerSecret, id, reply }) => {
     assertWorker(workerSecret);
     await ctx.db.patch(id, { status: "done", reply, completedAt: Date.now() });
+    return null;
   },
 });
 
 export const fail = mutation({
   args: { workerSecret: v.string(), id: v.id("messages"), error: v.string() },
+  returns: v.null(),
   handler: async (ctx, { workerSecret, id, error }) => {
     assertWorker(workerSecret);
     await ctx.db.patch(id, { status: "error", error, completedAt: Date.now() });
+    return null;
   },
 });
 
-// Conversation memory: the worker fetches a user's recent completed turns and
-// splices them into the prompt so the (otherwise stateless) assistant can follow
-// a conversation. PII-gated by the worker secret. Returns chronological (oldest
-// first) {text, reply} pairs, skipping synthetic auto-resume / e2e messages and
-// any turn missing text or reply. Overfetches then trims because the status
-// filter + skips can drop rows.
+// ---------------------------------------------------------------------------
+// recentForUser — conversation memory for the (otherwise stateless) assistant.
+// Back-compat: read by_userId when a userId is given (the stable tenant key, A1),
+// else fall back to by_user(userNumber) for the legacy/operator path. Strictly
+// ONE user — no cross-tenant bleed. Keeps the resume:/e2e + empty-row skips, and
+// now skips non-"done" rows in the JS loop (instead of a .filter() table-scan
+// refinement) — overfetching n*4 to absorb the dropped rows.
+// ---------------------------------------------------------------------------
 export const recentForUser = query({
   args: {
     workerSecret: v.string(),
-    userNumber: v.string(),
+    userId: v.optional(v.id("users")),
+    userNumber: v.optional(v.string()),
     limit: v.number(),
   },
-  handler: async (ctx, { workerSecret, userNumber, limit }) => {
+  returns: v.array(
+    v.object({
+      text: v.string(),
+      reply: v.string(),
+      receivedAt: v.number(),
+    }),
+  ),
+  handler: async (ctx, { workerSecret, userId, userNumber, limit }) => {
     assertWorker(workerSecret);
     const n = Math.max(1, Math.min(20, Math.floor(limit)));
-    const rows = await ctx.db
-      .query("messages")
-      .withIndex("by_user", (q) => q.eq("userNumber", userNumber))
-      .order("desc")
-      .filter((q) => q.eq(q.field("status"), "done"))
-      .take(n * 3);
+
+    // Prefer the tenant key; fall back to the source address. With neither there
+    // is no user to scope to — return empty rather than scan the whole table.
+    const rows = userId
+      ? await ctx.db
+          .query("messages")
+          .withIndex("by_userId", (q) => q.eq("userId", userId))
+          .order("desc")
+          .take(n * 4)
+      : userNumber
+        ? await ctx.db
+            .query("messages")
+            .withIndex("by_user", (q) => q.eq("userNumber", userNumber))
+            .order("desc")
+            .take(n * 4)
+        : [];
+
     const out: { text: string; reply: string; receivedAt: number }[] = [];
     for (const m of rows) {
+      if (m.status !== "done") continue;
       if (m.handle.startsWith("resume:") || m.handle.startsWith("e2e")) continue;
       if (!m.text || !m.reply) continue;
       out.push({ text: m.text, reply: m.reply, receivedAt: m.receivedAt });
@@ -105,13 +238,40 @@ export const recentForUser = query({
   },
 });
 
-// Operational read-only view (no PII gate needed for counts; gate full rows).
+// ---------------------------------------------------------------------------
+// stats — operational counts. Replaces the full-table .collect() scan with one
+// bounded indexed take per status via by_status (design §12 #9): a flood of rows
+// can't blow the ~16k read limit / 1s CPU budget. Each .take(MAX) is index-
+// ordered; counts above MAX are reported as MAX (good enough for an ops view).
+// ---------------------------------------------------------------------------
+const STATS_MAX = 5000;
+const STATUSES = ["queued", "processing", "done", "error"] as const;
+
 export const stats = query({
   args: {},
+  returns: v.object({
+    total: v.number(),
+    queued: v.number(),
+    processing: v.number(),
+    done: v.number(),
+    error: v.number(),
+  }),
   handler: async (ctx) => {
-    const all = await ctx.db.query("messages").collect();
-    const by: Record<string, number> = {};
-    for (const m of all) by[m.status] = (by[m.status] ?? 0) + 1;
-    return { total: all.length, ...by };
+    const counts: Record<(typeof STATUSES)[number], number> = {
+      queued: 0,
+      processing: 0,
+      done: 0,
+      error: 0,
+    };
+    for (const status of STATUSES) {
+      const rows = await ctx.db
+        .query("messages")
+        .withIndex("by_status", (q) => q.eq("status", status))
+        .take(STATS_MAX);
+      counts[status] = rows.length;
+    }
+    const total =
+      counts.queued + counts.processing + counts.done + counts.error;
+    return { total, ...counts };
   },
 });
