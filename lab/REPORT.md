@@ -227,7 +227,60 @@ block before `_NOTICE`); +2 regression tests; **95 lab tests green**; commit
 still happens; this only cleans the reply text.
 
 **Remaining operator actions:**
-1. Rotate the leaked keys in `~/.hermes-savedlab/.env` — now **5**: MiniMax
-   (Token Plan `sk-cp-` key was pasted in chat), 2× Sendblue, Composio, and the
-   old MiniMax key.
+1. Rotate the leaked keys in `~/.hermes-savedlab/.env` — now **6**: MiniMax
+   (Token Plan `sk-cp-` key was pasted in chat), 2× Sendblue, Composio, the
+   old MiniMax key, and the Exa test key (pasted in chat 2026-06-14).
 2. Metered M3 $/turn capture (carried over).
+
+---
+
+## Exa web search as a default Hermes tool (2026-06-14)
+
+**Goal:** make the Hermes agent use [Exa](https://exa.ai) by default, reflect it
+in Convex, and prove it with real tests.
+
+**What changed (all on the live system):**
+- **`exa` MCP server** added to `~/.hermes-savedlab/config.yaml` `mcp_servers`
+  (stdio, absolute path to the globally-installed `exa-mcp-server@3.2.1`, key via
+  `${EXA_API_KEY}` interpolation, `enabled: true` kill-switch). Hermes loads every
+  `enabled` MCP server by default, so it's on for every Hermes turn.
+- **`EXA_API_KEY`** added to `~/.hermes-savedlab/.env` (Hermes' `_SAFE_ENV_KEYS`
+  allowlist does NOT pass arbitrary env to stdio MCP subprocesses, so the key
+  must be referenced explicitly in the server's `env:` block).
+- **Convex:** `EXA_API_KEY` set as a deployment env var on `dev:zany-tapir-501`
+  (`npx convex env set`).
+- **Bridge entry-point fix (the load-bearing change).** The worker bridge invoked
+  `python cli.py --query=…` (python-fire entry) which **never runs
+  `discover_mcp_tools()`** — so MCP tools were silently absent on the worker path
+  (root cause: only the `hermes` argparse entry, `hermes_cli/main.py`, discovers
+  MCP). Switched `hermes_bridge.run_hermes` to `hermes chat --quiet --query=…`
+  (+`stdin=DEVNULL`). Same run logic ⇒ same stdout/stderr split + meaningful exit
+  code the bridge already relies on. Flag-smuggling defense re-validated under
+  argparse (single fused `--query=` token; live test left model as MiniMax-M3
+  when the message contained `--model=evil-model --api_key=LEAKED`).
+
+**Real tests (all passed):**
+- Exa REST `/search` with the key → HTTP 200, fresh results.
+- `exa-mcp-server` stdio handshake → `initialize` + `tools/list`
+  (`web_search_exa`, `web_fetch_exa`) + a live `web_search_exa` call (4.3 KB of
+  fresh content).
+- Hermes discovery registers 6 `mcp_exa_*` tools (`connected: True`).
+- `hermes chat` forced-tool turn: agent called `mcp_exa_web_search_exa` and
+  returned a real title.
+- **Deployed `hermes_bridge.run_hermes`** web query → clean lowercase reply with
+  real source URLs (21 s).
+- **Full live queue e2e:** Convex enqueue → launchd worker (`lane=hermes`) →
+  `hermes chat` + exa → Sendblue reply delivered → Convex `done` (dt ≈ 43 s),
+  fresh headline + source link.
+- **208 lab tests green** (`test_hermes_bridge` updated for the new entry +
+  `stdin=DEVNULL`).
+
+**Notes / follow-ups:**
+- Exa runs only on the **deferred Hermes lane**; the fast/medium lanes are direct
+  MiniMax calls (no tools) and are unaffected. MCP discovery adds ≈1–2 s
+  node cold-start per deferred turn — acceptable on the already-slow tool path.
+- Cosmetic: the startup banner can show `exa (stdio) — failed` because the banner
+  reads MCP status before discovery completes; the tool is nonetheless registered
+  and used for the turn (verified).
+- Kill-switch: set `mcp_servers.exa.enabled: false` in config.yaml and restart
+  the worker.

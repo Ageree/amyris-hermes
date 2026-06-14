@@ -1,9 +1,12 @@
 """Tests for the headless Hermes bridge (Task 4).
 
-The cmd assertions reflect the real headless contract discovered on 2026-06-08
-(see the module docstring in hermes_bridge.py): we invoke the venv python +
-cli.py with `-q <message> --quiet`. `--quiet` suppresses the banner/ASCII-art so
-stdout carries (close to) just the answer, and makes the exit code meaningful.
+The cmd assertions reflect the real headless contract (see the module docstring
+in hermes_bridge.py): we invoke the venv python + the `hermes` wrapper with the
+`chat` subcommand and `--query=<message> --quiet`. The `chat` (argparse) entry —
+unlike bare `cli.py` — runs MCP discovery at startup, which is what makes the
+`exa` web-search tools available on this path. `--quiet` suppresses the
+banner/ASCII-art so stdout carries (close to) just the answer, and makes the
+exit code meaningful.
 """
 import sys
 from pathlib import Path
@@ -21,18 +24,22 @@ def test_run_hermes_invokes_venv_python_with_home_and_returns_reply():
     assert out == "PONG"
     args, kwargs = m.call_args
     cmd = args[0]
-    assert cmd[:2] == ["/hermes/venv/bin/python", "/hermes/cli.py"]
+    # `hermes chat` (argparse) entry — runs MCP discovery so exa tools load.
+    assert cmd[:3] == ["/hermes/venv/bin/python", "/hermes/hermes", "chat"]
     assert "--quiet" in cmd
     # message fused into ONE token (flag-smuggling defense), not standalone
     assert "--query=Say PONG" in cmd
     assert "Say PONG" not in cmd
     assert kwargs["cwd"] == "/hermes"
     assert kwargs["env"]["HERMES_HOME"] == "/h"
+    # non-TTY worker must never block on an interactive prompt
+    import subprocess as _sp
+    assert kwargs["stdin"] == _sp.DEVNULL
 
 
 def test_run_hermes_does_not_smuggle_flags_from_untrusted_message():
     """A message that looks like CLI flags must be fused into --query=<...>, never
-    passed as standalone argv elements — python-fire would otherwise parse them as
+    passed as standalone argv elements — argparse would otherwise parse them as
     flags (e.g. --ignore_rules, --api_key, --image=<file>)."""
     fake = MagicMock(returncode=0, stdout="ok\n", stderr="")
     evil = "--ignore_rules --api_key=stolen"

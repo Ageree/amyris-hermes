@@ -14,8 +14,12 @@ DISCOVERY (real run, 2026-06-08 — `cli.py -q "...PONG..."`):
 So this bridge runs `--quiet` and trusts the exit code. It also defensively
 strips any leaked `<think>...</think>` reasoning blocks (M3 can emit them) and
 ANSI escape sequences, then returns the trimmed text. The `hermes` shell alias
-is unavailable to subprocesses, so we call the venv python + cli.py directly
-(see hermes-lab-cli-ops).
+is unavailable to subprocesses, so we call the venv python + the `hermes`
+wrapper script (-> hermes_cli.main, argparse) with the `chat` subcommand. We
+deliberately use this argparse entry rather than `cli.py` directly because only
+it runs `discover_mcp_tools()` at startup — that's what makes configured MCP
+servers (e.g. `exa` web search) available to the agent on this path (see
+run_hermes for details and hermes-lab-cli-ops).
 
 NOTE (environment): at discovery time the live model call failed with
 `HTTP 400: No models provided` (provider=openrouter, empty model) — a config
@@ -90,26 +94,34 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
         raise ValueError("empty message")
     query = _with_history(message, history)
     env = {**os.environ, "HERMES_HOME": hermes_home}
+    # ENTRY POINT: we invoke the `hermes` wrapper (-> hermes_cli.main, argparse)
+    # with the `chat` subcommand, NOT `cli.py` directly. WHY: only the argparse
+    # entry runs `discover_mcp_tools()` at startup (hermes_cli/main.py), which
+    # connects the configured MCP servers (e.g. `exa` web search) and registers
+    # their tools for the turn. The bare `cli.py` (python-fire) entry NEVER does
+    # MCP discovery, so MCP tools were silently absent on the worker path. The
+    # underlying run logic — and therefore the stdout/stderr split and the
+    # meaningful --quiet exit code this bridge relies on — is identical.
+    #
     # SECURITY (argv flag smuggling): `message` is UNTRUSTED — it is the raw text
-    # of an inbound iMessage and can be sent by any third party. cli.py uses
-    # python-fire (`fire.Fire(main)`), whose flags include dangerous ones like
-    # --api_key / --base_url / --provider / --image (arbitrary file read) /
-    # --ignore_rules. If the message were its own argv element, a message such as
-    # "--ignore_rules" would be parsed as a FLAG. We therefore fuse it into a
-    # single `--query=<message>` token: Fire splits flags across argv elements but
-    # never WITHIN one (it splits a token only on the first `=`), so any `--flag`
-    # inside the message stays part of the query string. Fire parses values with
-    # ast.literal_eval (no eval/RCE). The `--` separator the reviewer suggested is
-    # an argparse idiom and does NOT bind reliably in Fire — this does.
-    # (Edge case, deferred to P1B hardening: Fire literal-eval coerces a lone
-    # numeric/bool/bracket token, e.g. "123" -> int; harmless, not a security issue.)
+    # of an inbound iMessage and can be sent by any third party. argparse exposes
+    # dangerous options (--api_key / --base_url / --provider / --image (arbitrary
+    # file read) / --model / ...). If the message were its own argv element, a
+    # message like "--model=evil" would be parsed as a FLAG. We therefore fuse it
+    # into a SINGLE `--query=<message>` token: argparse assigns everything after
+    # the first `=` to the value and never splits WITHIN one argv element, so any
+    # `--flag` inside the message stays part of the query string. Live-verified
+    # 2026-06-14: a query of "--model=evil-model --api_key=LEAKED ..." left the
+    # model as MiniMax-M3 and was treated as plain (injection) text. stdin is
+    # DEVNULL so the non-TTY worker never blocks on an interactive prompt.
     proc = subprocess.run(
-        [python_bin, f"{hermes_dir}/cli.py", "--quiet", f"--query={query}"],
+        [python_bin, f"{hermes_dir}/hermes", "chat", "--quiet", f"--query={query}"],
         cwd=hermes_dir,
         env=env,
         capture_output=True,
         text=True,
         timeout=timeout,
+        stdin=subprocess.DEVNULL,
     )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
