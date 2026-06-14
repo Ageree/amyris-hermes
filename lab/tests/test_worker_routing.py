@@ -84,13 +84,29 @@ def test_outbound_client_selected_by_channel():
 
 
 def test_legacy_fallback_to_config_target_when_no_address_on_claim():
-    # A row predating replyTarget AND userNumber falls back to cfg.reply_target so
-    # the operator's pre-migration rows are never dropped.
-    convex = _convex_for(_claim(replyTarget=None, userNumber=""))
+    # A LEGACY row (no userId) predating replyTarget AND userNumber falls back to
+    # cfg.reply_target so the operator's pre-migration rows are never dropped.
+    convex = _convex_for(_claim(replyTarget=None, userNumber="", userId=None))
     rec = RecordingChannel("imessage")
     registry = ChannelRegistry({"imessage": rec})
     process_one(convex, registry, _cfg(reply_target="+1OPERATOR"), run_fn=MagicMock(return_value="ok"))
     assert rec.sends and rec.sends[0][0] == "+1OPERATOR"
+
+
+def test_tenant_row_without_address_is_failed_not_leaked_to_operator():
+    # A2 defense-in-depth: a TENANT row (userId set) with no replyTarget/userNumber
+    # must NEVER fall back to the operator number — that would leak one tenant's
+    # answer. It is marked failed and nothing is sent.
+    convex = _convex_for(_claim(replyTarget=None, userNumber="", userId="u_tenant"))
+    rec = RecordingChannel("imessage")
+    registry = ChannelRegistry({"imessage": rec})
+    run_fn = MagicMock(return_value="secret answer")
+    did = process_one(convex, registry, _cfg(reply_target="+1OPERATOR"), run_fn=run_fn)
+    assert did is True
+    assert rec.sends == [], "must not send a tenant reply to the operator number"
+    run_fn.assert_not_called()  # never even runs Hermes — bailed before processing
+    calls = [c.args[0] for c in convex.mutation.call_args_list]
+    assert calls == ["messages:claimNext", "messages:fail"]
 
 
 def test_unconfigured_channel_kind_does_not_crash_loop():

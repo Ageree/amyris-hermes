@@ -45,14 +45,16 @@ class TypingKeepalive:
 
     def __init__(
         self,
-        sendblue: Any,
+        channel: Any,
         to_number: str,
         *,
         interval: float = DEFAULT_INTERVAL,
         max_duration_ms: int = DEFAULT_MAX_DURATION_MS,
         enabled: bool = True,
     ):
-        self._sendblue = sendblue
+        # `channel` is any object with send_typing(addr, state=, max_duration_ms=) —
+        # a Channel (SendblueChannel/TelegramChannel) post-M2, or a raw SendblueClient.
+        self._channel = channel
         self._to = to_number
         self._interval = max(0.5, float(interval))
         self._max_duration_ms = int(max_duration_ms)
@@ -131,7 +133,7 @@ class TypingKeepalive:
 
     def _fire(self, state: str) -> None:
         try:
-            self._sendblue.send_typing(
+            self._channel.send_typing(
                 self._to, state=state, max_duration_ms=self._max_duration_ms
             )
         except Exception:  # cosmetic — never let typing break the reply

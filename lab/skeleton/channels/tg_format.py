@@ -45,12 +45,16 @@ def render_html(text: str) -> str:
     the code blocks. This guarantees a `<` in code is escaped and emphasis markers
     inside code are not interpreted.
     """
-    src = text or ""
+    # Strip NUL FIRST: the placeholder scheme below is NUL-delimited, so a literal
+    # NUL in model output (control chars do leak from LLMs echoing garbled/tool
+    # text) would otherwise collide with / corrupt a placeholder. NUL is never
+    # meaningful in a chat reply, so dropping it is lossless.
+    src = (text or "").replace("\x00", "")
     stash: List[str] = []
 
     def _stash(rendered: str) -> str:
         stash.append(rendered)
-        return f"\x00{len(stash) - 1}\x00"  # NUL-delimited placeholder (never in LLM text)
+        return f"\x00{len(stash) - 1}\x00"  # NUL-delimited placeholder (NUL pre-stripped above)
 
     # 1. Fenced code blocks -> <pre><code> (optionally language-tagged).
     def _fence(m: "re.Match") -> str:
@@ -71,9 +75,11 @@ def render_html(text: str) -> str:
     src = _BOLD_RE.sub(r"<b>\1</b>", src)
     src = _ITALIC_RE.sub(r"<i>\1</i>", src)
 
-    # 5. Restore stashed code blocks.
+    # 5. Restore stashed code blocks. Bounds-safe: an index we never stashed
+    # (impossible now NUL is stripped, but defensive) restores to nothing.
     def _unstash(m: "re.Match") -> str:
-        return stash[int(m.group(1))]
+        i = int(m.group(1))
+        return stash[i] if 0 <= i < len(stash) else ""
 
     src = re.sub(r"\x00(\d+)\x00", _unstash, src)
     return src.strip()
@@ -91,13 +97,47 @@ def _slice_no_tag_cut(text: str, limit: int) -> int:
     return limit
 
 
+_TAG_RE = re.compile(r"<(/?)([a-zA-Z][a-zA-Z0-9-]*)((?:\s[^>]*)?)>")
+
+
+def _balance_chunks(chunks: List[str]) -> List[str]:
+    """Make each chunk standalone-valid HTML by closing tags left open at a chunk
+    boundary and reopening them at the start of the next chunk.
+
+    A long fenced code block or <blockquote> split across chunks would otherwise
+    leave chunk N with an unclosed <pre><code> and chunk N+1 with an orphan
+    </code></pre> — both rejected by Telegram parse_mode=HTML. We thread the open-
+    tag stack across chunks (reopening with the ORIGINAL opening tag, attributes
+    included, e.g. <code class="language-python">) so every chunk parses on its own.
+    """
+    out: List[str] = []
+    carry: List[str] = []  # full opening-tag strings to reopen at the next chunk start
+    for chunk in chunks:
+        body = "".join(carry) + chunk
+        stack: List[tuple] = []  # (tagName, fullOpeningString)
+        for m in _TAG_RE.finditer(body):
+            closing, name = m.group(1), m.group(2).lower()
+            if closing:
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i][0] == name:
+                        del stack[i]
+                        break
+            else:
+                stack.append((name, m.group(0)))
+        closers = "".join(f"</{name}>" for name, _ in reversed(stack))
+        out.append(body + closers)
+        carry = [full for _, full in stack]
+    return out
+
+
 def split_html_safe(text: str, *, max_chars: int = TG_SOFT_CHARS, hard_cap: int = TG_HARD_CAP) -> List[str]:
-    """Chunk rendered HTML into <= max_chars pieces, never cutting an open tag.
+    """Chunk rendered HTML into <= max_chars pieces, each standalone-valid HTML.
 
     Telegram is ONE batch message per reply (no Poke bubbles — the ~1/s per-chat
     limit makes multi-bubble counterproductive), so this only fires for replies
     longer than a single message. Splits on paragraph then line boundaries; a
-    boundary-less giant blob is hard-sliced at a tag-safe index.
+    boundary-less giant blob is hard-sliced at a tag-safe index; then tags spanning
+    a boundary are closed+reopened so no chunk has a dangling/orphan tag.
     """
     body = (text or "").strip()
     if not body:
@@ -123,4 +163,4 @@ def split_html_safe(text: str, *, max_chars: int = TG_SOFT_CHARS, hard_cap: int 
             chunks.append(chunk)
         remaining = remaining[cut:].lstrip()
 
-    return [c[:hard_cap] for c in chunks if c]
+    return [c[:hard_cap] for c in _balance_chunks(chunks) if c]

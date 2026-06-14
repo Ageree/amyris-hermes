@@ -120,7 +120,7 @@ class WorkerConfig:
     sendblue_key_id: str
     sendblue_secret: str
     sendblue_from: str
-    reply_target: str  # operator's E.164 — the ONLY number we reply to
+    reply_target: str  # operator's E.164 — LEGACY FALLBACK only (userId-less rows); see A2
     hermes_home: str
     hermes_dir: str
     python_bin: str
@@ -421,15 +421,32 @@ class _BubbleEmitter:
         if self._typing is not None:
             self._typing.poke()
 
+    def _render(self, text: str) -> str:
+        """channel.render, but a formatting bug can NEVER raise into the loop
+        (A3): on failure, fall back to the raw stripped text."""
+        try:
+            return self._channel.render(text)
+        except Exception:
+            log.exception("channel render failed for %s; sending raw", self._target)
+            return (text or "").strip()
+
+    def _split(self, rendered: str) -> list:
+        """channel.split, fail-safe to a single chunk (never raises)."""
+        try:
+            return self._channel.split(rendered)
+        except Exception:
+            log.exception("channel split failed for %s; single chunk", self._target)
+            return [rendered.strip()] if rendered.strip() else []
+
     def stream_sink(self, bubble: str) -> None:
         """on_bubble sink for the streaming fast lane — render + send now, no pacing."""
-        self._send(self._channel.render(bubble), pace=False)
+        self._send(self._render(bubble), pace=False)
 
     def send_text(self, text: str) -> int:
         body = text if (text or "").strip() else ERROR_REPLY
-        rendered = self._channel.render(body)
+        rendered = self._render(body)
         if self._cfg.multi_bubble_enabled:
-            chunks = self._channel.split(rendered)
+            chunks = self._split(rendered)
             if chunks and str(chunks[-1]).endswith("…"):
                 log.warning("reply for %s exceeded chunk budget; tail truncated", self._target)
         else:
@@ -576,10 +593,25 @@ def process_one(
     text = claimed["text"]
     user_number = claimed.get("userNumber") or ""
     user_id = claimed.get("userId")
-    # A2: route by the claimed row's OWN channel + address — cfg.reply_target is only a legacy fallback.
-    # (Rows predating replyTarget/userNumber fall back to it.)
     channel_kind = claimed.get("channel") or "imessage"
-    reply_target = claimed.get("replyTarget") or user_number or cfg.reply_target  # cfg = legacy fallback
+    # A2: route by the claimed row's OWN address. cfg.reply_target is the legacy
+    # fallback ONLY for userId-less (operator/pre-migration) rows. A TENANT row
+    # (userId set) with no address is a data bug — replying to cfg.reply_target
+    # would leak one tenant's answer to the operator, so we mark it failed instead.
+    reply_target = claimed.get("replyTarget") or user_number
+    if not reply_target:
+        if user_id:
+            log.error("tenant row %s (user %s) has no reply address; marking failed", mid, user_id)
+            try:
+                convex.mutation(
+                    "messages:fail",
+                    {"workerSecret": cfg.worker_secret, "id": mid,
+                     "error": "tenant row missing reply address"},
+                )
+            except Exception:
+                log.exception("fail mutation also failed for %s", mid)
+            return True
+        reply_target = cfg.reply_target  # legacy fallback: operator/pre-migration rows only
     started = time.monotonic()
     lane = "hermes"  # updated to "fastlane" if the fast lane answers
     history: list = []
