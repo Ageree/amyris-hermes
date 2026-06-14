@@ -1,9 +1,8 @@
-"""Channel layer unit tests (M2): Protocol conformance, registry, both impls,
-Telegram HTML formatting + client resilience.
+"""Channel layer unit tests (M2): Protocol conformance, registry, both adapters.
 
-Network-free: SendblueClient/TelegramClient construction does no I/O; the
-TelegramClient HTTP tests monkeypatch `requests.post` with a fake response. The
-LIVE Telegram round-trip + deep Bot API 10.1 conformance land in M3.
+tg_format (render/split) lives in test_tg_format.py; the TelegramClient HTTP wiring
+in test_telegram_client.py. This file covers OutboundResult, the Channel Protocol,
+ChannelRegistry.from_config, and the Sendblue/Telegram channel ADAPTERS. Network-free.
 """
 import sys
 from pathlib import Path
@@ -16,9 +15,6 @@ from worker import WorkerConfig  # noqa: E402
 from channels import (  # noqa: E402
     Channel, ChannelRegistry, OutboundResult, SendblueChannel, TelegramChannel,
 )
-from channels import tg_format  # noqa: E402
-import channels.telegram_client as tc_mod  # noqa: E402
-from channels.telegram_client import TelegramClient  # noqa: E402
 
 
 def _cfg(**over):
@@ -54,7 +50,6 @@ def test_both_impls_satisfy_channel_protocol():
 # ---- ChannelRegistry ---------------------------------------------------------
 
 def test_registry_from_config_builds_only_credentialed_channels():
-    # Sendblue creds only -> imessage; no telegram token -> no telegram.
     reg = ChannelRegistry.from_config(_cfg())
     assert "imessage" in reg
     assert "telegram" not in reg
@@ -140,16 +135,15 @@ def test_sendblue_send_typing_swallows_error():
     assert SendblueChannel(client).send_typing("+1").ok is False
 
 
-# ---- TelegramChannel ---------------------------------------------------------
+# ---- TelegramChannel (adapter; tg_format/client tested in their own files) ----
 
-def test_telegram_render_html():
+def test_telegram_render_delegates_to_render_html():
     assert TelegramChannel(MagicMock()).render("**b** _i_ `c`") == "<b>b</b> <i>i</i> <code>c</code>"
 
 
 def test_telegram_split_returns_chunks_under_cap():
     out = TelegramChannel(MagicMock()).split("y" * 9000)
     assert len(out) >= 3
-    assert all(len(c) <= tg_format.TG_HARD_CAP for c in out)
 
 
 def test_telegram_send_message_forwards_address_and_body():
@@ -158,6 +152,13 @@ def test_telegram_send_message_forwards_address_and_body():
     res = TelegramChannel(client).send_message("555", "<b>hi</b>")
     assert client.send_message.call_args.args == ("555", "<b>hi</b>")
     assert res.ok is True and res.provider_id == "77"
+
+
+def test_telegram_send_message_empty_not_sent():
+    client = MagicMock()
+    res = TelegramChannel(client).send_message("555", "   ")
+    assert res.ok is False
+    client.send_message.assert_not_called()
 
 
 def test_telegram_send_message_swallows_error():
@@ -174,123 +175,3 @@ def test_telegram_typing_start_fires_chat_action_stop_is_noop():
     client.send_chat_action.reset_mock()
     ch.send_typing("555", state="stop")
     client.send_chat_action.assert_not_called()  # TG auto-clears; stop is a no-op
-
-
-# ---- tg_format.render_html ---------------------------------------------------
-
-def test_render_html_escapes_specials_in_prose():
-    assert tg_format.render_html("a < b & c > d") == "a &lt; b &amp; c &gt; d"
-
-
-def test_render_html_escapes_inside_inline_code():
-    assert tg_format.render_html("use `a<b && c>d`") == "use <code>a&lt;b &amp;&amp; c&gt;d</code>"
-
-
-def test_render_html_fenced_code_with_language():
-    out = tg_format.render_html("```python\nprint(1<2)\n```")
-    assert out == '<pre><code class="language-python">print(1&lt;2)</code></pre>'
-
-
-def test_render_html_does_not_touch_emphasis_inside_code():
-    assert tg_format.render_html("`**not bold**`") == "<code>**not bold**</code>"
-
-
-def test_render_html_bold_and_italic():
-    assert tg_format.render_html("**bold** and *italic*") == "<b>bold</b> and <i>italic</i>"
-
-
-# ---- tg_format.split_html_safe ----------------------------------------------
-
-def test_split_html_safe_short_is_single():
-    assert tg_format.split_html_safe("hello") == ["hello"]
-
-
-def test_split_html_safe_splits_long_under_cap():
-    chunks = tg_format.split_html_safe("para\n\n" * 2000)
-    assert len(chunks) >= 2
-    assert all(len(c) <= tg_format.TG_HARD_CAP for c in chunks)
-
-
-def test_split_html_safe_does_not_cut_inside_a_tag():
-    # A long run with a tag straddling the soft boundary must not be cut mid-tag.
-    text = ("x" * 3790) + "<b>boundarytag</b>" + ("y" * 3000)
-    chunks = tg_format.split_html_safe(text, max_chars=3800)
-    for c in chunks:
-        # no chunk ends with a half-open tag
-        assert c.count("<") == c.count(">")
-
-
-# ---- TelegramClient (HTTP wiring; live round-trip is M3) ---------------------
-
-class _Resp:
-    def __init__(self, status_code, payload=None, text=""):
-        self.status_code = status_code
-        self._payload = payload or {}
-        self.text = text
-
-    def json(self):
-        return self._payload
-
-
-def test_telegram_client_send_message_html_payload(monkeypatch):
-    calls = []
-
-    def fake_post(url, json=None, timeout=None):
-        calls.append((url, json))
-        return _Resp(200, {"ok": True, "result": {"message_id": 1}})
-
-    monkeypatch.setattr(tc_mod.requests, "post", fake_post)
-    TelegramClient("123:abc").send_message("555", "<b>hi</b>")
-    url, payload = calls[0]
-    assert url.endswith("/bot123:abc/sendMessage")
-    assert payload["chat_id"] == "555"
-    assert payload["parse_mode"] == "HTML"
-    assert payload["link_preview_options"] == {"is_disabled": True}
-
-
-def test_telegram_client_400_retries_without_parse_mode(monkeypatch):
-    seq = [_Resp(400, text="bad entity"), _Resp(200, {"ok": True})]
-    sent = []
-
-    def fake_post(url, json=None, timeout=None):
-        sent.append(json)
-        return seq.pop(0)
-
-    monkeypatch.setattr(tc_mod.requests, "post", fake_post)
-    TelegramClient("t").send_message("555", "<b>broken")
-    assert len(sent) == 2
-    assert "parse_mode" in sent[0]
-    assert "parse_mode" not in sent[1]  # plain-text retry
-
-
-def test_telegram_client_429_honors_retry_after(monkeypatch):
-    seq = [_Resp(429, {"parameters": {"retry_after": 2}}), _Resp(200, {"ok": True})]
-    slept = []
-
-    def fake_post(url, json=None, timeout=None):
-        return seq.pop(0)
-
-    monkeypatch.setattr(tc_mod.requests, "post", fake_post)
-    TelegramClient("t", sleep_fn=lambda s: slept.append(s)).send_message("555", "hi")
-    assert slept == [2.0]
-
-
-def test_telegram_client_non_2xx_raises(monkeypatch):
-    monkeypatch.setattr(tc_mod.requests, "post", lambda url, json=None, timeout=None: _Resp(500, text="boom"))
-    with pytest.raises(RuntimeError):
-        TelegramClient("t").send_message("555", "hi")
-
-
-def test_telegram_client_send_chat_action(monkeypatch):
-    calls = []
-    monkeypatch.setattr(tc_mod.requests, "post",
-                        lambda url, json=None, timeout=None: calls.append((url, json)) or _Resp(200, {"ok": True}))
-    TelegramClient("t").send_chat_action("555", "typing")
-    url, payload = calls[0]
-    assert url.endswith("/sendChatAction")
-    assert payload == {"chat_id": "555", "action": "typing"}
-
-
-def test_telegram_client_requires_token():
-    with pytest.raises(ValueError):
-        TelegramClient("")

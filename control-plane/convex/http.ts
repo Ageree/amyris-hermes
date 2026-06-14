@@ -67,4 +67,82 @@ http.route({
   }),
 });
 
+// Telegram inbound webhook. Always-on at https://<deployment>.convex.site.
+// Auth model (design §3.1): the constant-time secret token in the
+// `X-Telegram-Bot-Api-Secret-Token` header (set when registering the webhook via
+// setWebhook), compared to TELEGRAM_WEBHOOK_SECRET. Wrong/absent -> 401.
+// Validation: ignore bots, edits, non-private chats, and empty payloads. Never
+// 5xx on a payload problem (Telegram retries non-2xx). `/start <token>` redeems a
+// pairing token (binds chat.id -> userId). A normal message from a VERIFIED chat
+// is enqueued (durable, channel="telegram", routed back to chat.id). Unknown
+// senders are dropped (no enqueue, no send) so a stranger can't burn the shared
+// bot's budget. handle = "tg:<update_id>" is the idempotency key.
+http.route({
+  path: "/telegram/inbound",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const header = request.headers.get("X-Telegram-Bot-Api-Secret-Token") ?? "";
+    const expected = process.env.TELEGRAM_WEBHOOK_SECRET ?? "";
+    if (!expected || !safeEqual(header, expected)) {
+      return new Response("unauthorized", { status: 401 });
+    }
+
+    let update: any;
+    try {
+      update = await request.json();
+    } catch {
+      return jsonOk({ ignored: true }); // malformed JSON — don't make Telegram retry
+    }
+
+    // Only fresh, private, human messages. Ignore edits/channel posts/bots.
+    const msg = update?.message;
+    if (!msg || update?.edited_message || update?.channel_post) {
+      return jsonOk({ ignored: true });
+    }
+    if (msg?.chat?.type !== "private" || msg?.from?.is_bot === true) {
+      return jsonOk({ ignored: true });
+    }
+    const text = String(msg?.text ?? "").trim();
+    const chatId = msg?.chat?.id;
+    const fromId = msg?.from?.id;
+    if (!text || chatId === undefined || chatId === null || fromId === undefined || fromId === null) {
+      return jsonOk({ ignored: true });
+    }
+
+    const replyTarget = String(chatId);
+    const userNumber = String(fromId);
+    const handle = `tg:${update?.update_id ?? ""}`;
+
+    // /start <token> -> redeem the pairing token (onboard this chat).
+    const start = text.match(/^\/start\s+([A-Za-z0-9_-]{1,64})$/);
+    if (start) {
+      await ctx.runMutation(internal.pairing.redeemTelegram, {
+        token: start[1],
+        address: replyTarget,
+        replyTarget,
+        firstName: msg?.from?.first_name ? String(msg.from.first_name) : undefined,
+      });
+      // Binding flips the dashboard live; the user's next message is answered.
+      return jsonOk({ ok: true });
+    }
+
+    // Resolve the sender to a tenant via a VERIFIED binding. Unknown -> drop.
+    const resolved = await ctx.runQuery(internal.lib.identity.resolveUserByAddress, {
+      channel: "telegram",
+      address: replyTarget,
+    });
+    if (!resolved) return jsonOk({ ignored: true });
+
+    await ctx.runMutation(internal.messages.enqueue, {
+      handle,
+      userId: resolved.userId,
+      channel: "telegram",
+      replyTarget,
+      userNumber,
+      text,
+    });
+    return jsonOk({ ok: true });
+  }),
+});
+
 export default http;

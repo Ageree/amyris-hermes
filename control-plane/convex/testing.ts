@@ -76,6 +76,19 @@ export const cleanupTenants = mutation({
         .withIndex("by_userId", (q) => q.eq("userId", uid))
         .collect();
       for (const m of msgs) await ctx.db.delete(m._id);
+      // Also clean channelBindings + pairingTokens a redeem smoke-test may have created.
+      const binds = await ctx.db
+        .query("channelBindings")
+        .withIndex("by_user", (q) => q.eq("userId", uid))
+        .collect();
+      for (const b of binds) await ctx.db.delete(b._id);
+      for (const ch of ["imessage", "telegram"] as const) {
+        const toks = await ctx.db
+          .query("pairingTokens")
+          .withIndex("by_user_channel", (q) => q.eq("userId", uid).eq("channel", ch))
+          .collect();
+        for (const t of toks) await ctx.db.delete(t._id);
+      }
       const u = await ctx.db.get(uid);
       if (u) await ctx.db.delete(uid);
     }
