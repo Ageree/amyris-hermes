@@ -14,9 +14,12 @@ durably. This worker polls that queue and does the actual work:
 Because the queue is durable, messages are never lost while the brain is offline
 — they sit as "queued" and are picked up when it restarts.
 
-Security (carried over from app.py): the reply target is ALWAYS the
-config-derived operator number, never the inbound payload, and Hermes-internal
-error text is never leaked back to the user.
+Security (multi-tenant, M2): each reply is routed to the CLAIMED message's own
+channel + address (A2), set server-side by the authenticated inbound webhook —
+never a user-controllable payload field, and never a single hardcoded operator
+number. Cross-tenant isolation is enforced at the claim layer (claimNextForUser
+is userId-scoped) and at inbound resolution (verified channelBindings only).
+Hermes-internal error text is never leaked back to the user.
 """
 from __future__ import annotations
 
@@ -28,7 +31,11 @@ from typing import Any, Callable, Optional
 
 from convex_client import ConvexClient
 from hermes_bridge import run_hermes
-from sendblue_client import SendblueClient
+
+# Channel layer (HARD dependency — it IS the reply path). Routes each reply to the
+# claimed message's own channel + address (multi-tenancy M2), replacing the single
+# hardcoded operator number.
+from channels import ChannelRegistry, SendblueChannel
 
 # Fast lane is a SOFT dependency: a stale/partial deploy (worker.py updated but
 # fast_lane.py / bubbles.py not yet copied) must degrade to the unchanged
@@ -42,19 +49,10 @@ except Exception:  # pragma: no cover - exercised only on a broken deploy
     fast_reply = None
     stream_fast_reply = None
 
-# Multi-bubble splitting + typing indicator are also soft deps (same stale-deploy
-# reasoning). If unavailable, the worker still replies — as a single message, with
-# no typing indicator.
-try:
-    from bubbles import split_into_bubbles, was_truncated
-except Exception:  # pragma: no cover
-    def split_into_bubbles(text, **_kw):  # type: ignore[no-redef]
-        t = (text or "").strip()
-        return [t] if t else []
-
-    def was_truncated(bubbles):  # type: ignore[no-redef]
-        return False
-
+# Multi-bubble splitting now lives in the Channel layer (SendblueChannel.split via
+# bubbles.split_into_bubbles); the worker no longer imports it directly. The typing
+# indicator is still a soft dep (stale-deploy resilience): if unavailable, the
+# worker still replies, just without the "…" indicator.
 try:
     from typing_indicator import TypingKeepalive
 except Exception:  # pragma: no cover
@@ -129,6 +127,15 @@ class WorkerConfig:
     poll_interval: float = 2.0          # ACTIVE interval (just after work / draining)
     hermes_timeout: float = 180.0
     composio_user_id: str = ""
+    # Fleet scoping: when USER_ID is set (a per-tenant container, M6), the worker
+    # claims ONLY that user's rows via claimNextForUser; empty = the legacy/operator
+    # global claimNext path. Server-side userId-scoping means a scoped worker can
+    # never touch another tenant's rows (design §8).
+    scoped_user_id: str = ""
+    # Telegram channel (M3). Optional: a worker with no token serves iMessage only;
+    # ChannelRegistry.from_config skips Telegram and get("telegram") then raises.
+    telegram_bot_token: str = ""
+    telegram_webhook_secret: str = ""
     intent_ttl: float = 3600.0  # 1 hour
     # Adaptive polling: poll fast while active, back off to idle_poll_interval
     # after idle_after consecutive empty polls (cuts 24/7 Convex idle-poll volume
@@ -201,6 +208,9 @@ class WorkerConfig:
             poll_interval=float(os.environ.get("POLL_INTERVAL", "0.5")),
             hermes_timeout=float(os.environ.get("HERMES_TIMEOUT", "180.0")),
             composio_user_id=os.environ.get("COMPOSIO_USER_ID", os.environ.get("ALLOWED_USER_NUMBER", "")),
+            scoped_user_id=os.environ.get("USER_ID", ""),
+            telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
+            telegram_webhook_secret=os.environ.get("TELEGRAM_WEBHOOK_SECRET", ""),
             idle_poll_interval=float(os.environ.get("IDLE_POLL_INTERVAL", "3.0")),
             idle_after=int(os.environ.get("IDLE_AFTER", "6")),
             intent_interval=float(os.environ.get("INTENT_INTERVAL", "10.0")),
@@ -247,24 +257,29 @@ def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]
     return bool(cfg.minimax_api_key) and fast_reply is not None
 
 
-def _fetch_history(convex: Any, cfg: WorkerConfig, user_number: str) -> list:
+def _fetch_history(convex: Any, cfg: WorkerConfig, user_number: str,
+                   user_id: Optional[str] = None) -> list:
     """Recent (text, reply) turns for this user, as OpenAI {role, content} dicts.
 
+    Scopes by the STABLE tenant key (userId, A1) when the claimed row carries one
+    — so no tenant's transcript can bleed into another's prompt — and falls back to
+    the source address (userNumber) for legacy/operator rows that predate userId.
     Chronological (oldest first) so they read as a real transcript. Best-effort:
     any Convex error -> [] (memory is an enhancement, never a hard dependency).
     Skips turns missing text or reply and caps each string so an old huge tool
     dump can't blow up the prompt.
     """
-    if not cfg.history_enabled or not user_number:
+    if not cfg.history_enabled or not (user_id or user_number):
         return []
+    args: dict = {"workerSecret": cfg.worker_secret, "limit": cfg.history_turns}
+    if user_id:
+        args["userId"] = user_id
+    else:
+        args["userNumber"] = user_number
     try:
-        rows = convex.query(
-            "messages:recentForUser",
-            {"workerSecret": cfg.worker_secret, "userNumber": user_number,
-             "limit": cfg.history_turns},
-        ) or []
+        rows = convex.query("messages:recentForUser", args) or []
     except Exception:
-        log.exception("history fetch failed for %s", user_number)
+        log.exception("history fetch failed for %s", user_id or user_number)
         return []
     cap = cfg.history_char_cap
     msgs: list = []
@@ -339,13 +354,18 @@ class _NullTyping:
 _NULL_TYPING = _NullTyping()
 
 
-def _make_typing(sendblue: Any, cfg: WorkerConfig, target: str):
-    """Build + start a TypingKeepalive, or a no-op handle when disabled."""
+def _make_typing(channel: Any, cfg: WorkerConfig, target: str):
+    """Build + start a TypingKeepalive over a Channel, or a no-op when disabled.
+
+    TypingKeepalive fires channel.send_typing(target, state=, max_duration_ms=) —
+    the Channel Protocol shape — so it works for any provider (iMessage re-fires +
+    explicit stop; Telegram's "start" sends a chat action and "stop" is a no-op).
+    """
     if not (cfg.typing_enabled and TypingKeepalive is not None and target):
         return _NULL_TYPING
     try:
         return TypingKeepalive(
-            sendblue, target, interval=cfg.typing_interval,
+            channel, target, interval=cfg.typing_interval,
             max_duration_ms=cfg.typing_max_duration_ms, enabled=True,
         ).start()
     except Exception:  # pragma: no cover - typing must never break the reply
@@ -354,21 +374,22 @@ def _make_typing(sendblue: Any, cfg: WorkerConfig, target: str):
 
 
 class _BubbleEmitter:
-    """Send a reply as one or more paced iMessage bubbles to the operator.
+    """Send a reply through a Channel to ONE address (the claimed message's own).
 
-    `stream_sink(bubble)` is the streaming fast lane's on_bubble sink: send a
-    single already-split bubble NOW, with NO pacing (paragraphs are naturally
+    `stream_sink(bubble)` is the streaming fast lane's on_bubble sink: render + send
+    a single already-split bubble NOW, with NO pacing (paragraphs are naturally
     spaced by generation, and a sleep here would block the read loop). `send_text(text)`
-    splits text into Poke-style bubbles then sends each paced cfg.bubble_delay apart
-    (Hermes / non-streaming paths, where bubbles are produced all at once). Sends are
-    BEST-EFFORT — a Sendblue failure is logged, never raised, so it can't kill the loop.
-    Order is safe in both paths: sends are sequential + blocking, so Sendblue receives
-    bubbles in order regardless of the gap. The typing indicator is re-poked after each
-    send so the next bubble shows "…".
+    renders then splits into the channel's chunks (Poke bubbles for iMessage, a
+    tag-safe split for Telegram) and sends each paced cfg.bubble_delay apart (Hermes /
+    non-streaming paths, where output is produced all at once). Sends are BEST-EFFORT
+    — the Channel swallows provider errors into OutboundResult(ok=False), logged here,
+    never raised, so they can't kill the loop. Order is safe in both paths: sends are
+    sequential + blocking, so the provider receives chunks in order regardless of the
+    gap. The typing indicator is re-poked after each send so the next chunk shows "…".
     """
 
-    def __init__(self, sendblue: Any, target: str, cfg: WorkerConfig, *, typing: Any = None, sleep_fn: Callable[[float], None] = time.sleep):
-        self._sb = sendblue
+    def __init__(self, channel: Any, target: str, cfg: WorkerConfig, *, typing: Any = None, sleep_fn: Callable[[float], None] = time.sleep):
+        self._channel = channel
         self._target = target
         self._cfg = cfg
         self._typing = typing
@@ -376,52 +397,58 @@ class _BubbleEmitter:
         self.count = 0
         self.first_at: Optional[float] = None  # monotonic of the first successful send (TTFB)
 
-    def _send(self, bubble: str, *, pace: bool) -> None:
-        text = (bubble or "").strip()
+    def _send(self, chunk: str, *, pace: bool) -> None:
+        text = (chunk or "").strip()
         if not text:
             return
-        # Pacing is ONLY for the batch path (bubbles produced all at once) — a small
+        # Pacing is ONLY for the batch path (chunks produced all at once) — a small
         # human gap. The STREAMING path must NOT pace: paragraphs are naturally
         # spaced by generation, and a sleep here would BLOCK the read loop and delay
         # the next bubble. Order is safe either way: sends are sequential + blocking,
-        # so Sendblue receives them in order regardless of the gap.
+        # so the provider receives them in order regardless of the gap.
         if pace and self.count > 0 and self._cfg.bubble_delay > 0:
             try:
                 self._sleep(self._cfg.bubble_delay)
             except Exception:
                 pass
         try:
-            self._sb.send_message(to_number=self._target, content=text[:MAX_REPLY_CHARS])
-            if self.first_at is None:
+            res = self._channel.send_message(self._target, text)
+            if getattr(res, "ok", True) and self.first_at is None:
                 self.first_at = time.monotonic()
-        except Exception:
-            log.exception("sendblue reply failed (bubble %d) for %s", self.count, self._target)
+        except Exception:  # defensive: a Channel impl should swallow, but never trust it
+            log.exception("channel reply failed (chunk %d) for %s", self.count, self._target)
         self.count += 1
         if self._typing is not None:
             self._typing.poke()
 
     def stream_sink(self, bubble: str) -> None:
-        """on_bubble sink for the streaming fast lane — send now, no pacing."""
-        self._send(bubble, pace=False)
+        """on_bubble sink for the streaming fast lane — render + send now, no pacing."""
+        self._send(self._channel.render(bubble), pace=False)
 
     def send_text(self, text: str) -> int:
         body = text if (text or "").strip() else ERROR_REPLY
+        rendered = self._channel.render(body)
         if self._cfg.multi_bubble_enabled:
-            bubbles = split_into_bubbles(
-                body, max_bubbles=self._cfg.bubble_max_count, max_chars=self._cfg.bubble_max_chars
-            )
-            if was_truncated(bubbles):
-                log.warning("reply for %s exceeded bubble budget; tail truncated", self._target)
+            chunks = self._channel.split(rendered)
+            if chunks and str(chunks[-1]).endswith("…"):
+                log.warning("reply for %s exceeded chunk budget; tail truncated", self._target)
         else:
-            bubbles = [body.strip()]
-        for b in (bubbles or [body.strip()]):
-            self._send(b, pace=True)
+            chunks = [rendered.strip()]
+        for c in (chunks or [rendered.strip()]):
+            self._send(c, pace=True)
         return self.count
 
 
-def _use_streaming(cfg: WorkerConfig) -> bool:
-    """Production streaming requires the flag, multi-bubble, and an available module."""
-    return cfg.streaming_enabled and cfg.multi_bubble_enabled and stream_fast_reply is not None
+def _use_streaming(cfg: WorkerConfig, channel_kind: str = "imessage") -> bool:
+    """Production streaming requires the flag, multi-bubble, an available module, and
+    an iMessage channel. Telegram uses ONE batch-rendered message (its ~1/s per-chat
+    limit makes Poke-style multi-bubble streaming counterproductive)."""
+    return (
+        cfg.streaming_enabled
+        and cfg.multi_bubble_enabled
+        and stream_fast_reply is not None
+        and channel_kind == "imessage"
+    )
 
 
 def _safe_fast_reply(text: str, cfg: WorkerConfig, history: Optional[list], mid: str) -> Optional[str]:
@@ -483,9 +510,29 @@ def _complete_after_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str) -
             log.exception("fail mutation also failed for %s", mid)
 
 
+def _as_registry(channels_or_client: Any, cfg: WorkerConfig) -> ChannelRegistry:
+    """Accept a ChannelRegistry OR a single raw client (back-compat).
+
+    The fleet/run_loop passes a ChannelRegistry. Older callers (and the 200+ unit
+    tests) pass a single Sendblue-like client positionally — wrap it as the sole
+    "imessage" channel so the routing code path is identical and the underlying
+    client receives the SAME send_message(to_number=, content=) / send_typing(state=)
+    calls it always has.
+    """
+    if isinstance(channels_or_client, ChannelRegistry):
+        return channels_or_client
+    return ChannelRegistry({
+        "imessage": SendblueChannel(
+            channels_or_client,
+            max_bubbles=cfg.bubble_max_count,
+            max_chars=cfg.bubble_max_chars,
+        )
+    })
+
+
 def process_one(
     convex: Any,
-    sendblue: Any,
+    channels: Any,
     cfg: WorkerConfig,
     *,
     run_fn: Callable[..., str] = run_hermes,
@@ -494,39 +541,74 @@ def process_one(
 ) -> bool:
     """Claim and process at most one queued message.
 
-    Returns True if a message was claimed and handled (so the caller should poll
-    again immediately), False if the queue was empty (caller should back off).
-    Never raises for a per-message failure — errors are caught, the message is
+    `channels` is a ChannelRegistry (fleet) OR a single client (back-compat, wrapped
+    as iMessage). Returns True if a message was claimed and handled (so the caller
+    should poll again immediately), False if the queue was empty (caller should back
+    off). Never raises for a per-message failure — errors are caught, the message is
     marked failed, and the user gets a friendly reply.
 
     Pipeline (latency-optimized):
-      1. Claim -> start the TYPING indicator immediately (user sees "…" in ~200ms).
-      2. FAST LANE first (no tools, reasoning off). In production this STREAMS:
-         Poke-style bubbles are sent as each paragraph completes, and a defer
-         verdict is detected from the first tokens (<1s) — so the Hermes hand-off
-         starts sooner. On a real answer the message completes without ever
-         cold-starting Hermes; on a deferral / error it falls back to Hermes.
-      3. Heavy lane (Hermes) reply is split into bubbles and sent.
-      4. Stop the typing indicator. Replies always go to the config operator
-         number, never the inbound payload.
+      1. Claim (scoped to USER_ID when set, else global) -> route by the claimed
+         message's OWN channel + address -> start the TYPING indicator immediately.
+      2. FAST LANE first (no tools, reasoning off). In production this STREAMS on
+         iMessage: bubbles are sent as each paragraph completes, and a defer verdict
+         is detected from the first tokens (<1s). On a real answer the message
+         completes without cold-starting Hermes; on a deferral / error it falls back.
+      3. Heavy lane (Hermes) reply is rendered + split for the channel and sent.
+      4. Stop the typing indicator. Each reply goes to the CLAIMED message's own
+         address (A2: per-message routing), never a global config constant.
     """
-    claimed = convex.mutation("messages:claimNext", {"workerSecret": cfg.worker_secret})
+    registry = _as_registry(channels, cfg)
+    # Fleet scoping: a per-tenant container claims only its own rows; otherwise the
+    # legacy/operator global claim. Either way the row carries its own channel +
+    # replyTarget so routing is identical.
+    if cfg.scoped_user_id:
+        claimed = convex.mutation(
+            "messages:claimNextForUser",
+            {"workerSecret": cfg.worker_secret, "userId": cfg.scoped_user_id},
+        )
+    else:
+        claimed = convex.mutation("messages:claimNext", {"workerSecret": cfg.worker_secret})
     if not claimed:
         return False
 
     mid = claimed["id"]
     text = claimed["text"]
     user_number = claimed.get("userNumber") or ""
+    user_id = claimed.get("userId")
+    # A2: route by the claimed row's OWN channel + address — cfg.reply_target is only a legacy fallback.
+    # (Rows predating replyTarget/userNumber fall back to it.)
+    channel_kind = claimed.get("channel") or "imessage"
+    reply_target = claimed.get("replyTarget") or user_number or cfg.reply_target  # cfg = legacy fallback
     started = time.monotonic()
     lane = "hermes"  # updated to "fastlane" if the fast lane answers
     history: list = []
 
-    typing = _make_typing(sendblue, cfg, cfg.reply_target)
-    emitter = _BubbleEmitter(sendblue, cfg.reply_target, cfg, typing=typing, sleep_fn=sleep_fn)
+    try:
+        channel = registry.get(channel_kind)
+    except KeyError:
+        # This worker has no channel for the claimed kind (e.g. a Telegram row on an
+        # iMessage-only worker). Don't strand the row or crash the loop — mark it
+        # failed with a clear error. In the fleet this shouldn't happen (tenant rows
+        # are claimed by their own scoped, correctly-provisioned worker).
+        log.error("no channel for kind %r (msg %s); marking failed", channel_kind, mid)
+        try:
+            convex.mutation(
+                "messages:fail",
+                {"workerSecret": cfg.worker_secret, "id": mid,
+                 "error": f"unconfigured channel {channel_kind}"},
+            )
+        except Exception:
+            log.exception("fail mutation also failed for %s", mid)
+        return True
+
+    typing = _make_typing(channel, cfg, reply_target)
+    emitter = _BubbleEmitter(channel, reply_target, cfg, typing=typing, sleep_fn=sleep_fn)
     t_hist = started  # stamp set after history fetch (stage timing)
     try:
         # Conversation memory: prior turns for this user (best-effort, [] on error).
-        history = _fetch_history(convex, cfg, user_number)
+        # Scoped by userId when present (A1) so no tenant's transcript bleeds across.
+        history = _fetch_history(convex, cfg, user_number, user_id=user_id)
         t_hist = time.monotonic()
 
         reply: Optional[str] = None
@@ -544,7 +626,7 @@ def process_one(
                 if full is not None:
                     reply, lane = full, "fastlane"
                     completed = _complete_then_send(convex, cfg, mid, full, emitter)
-            elif _use_streaming(cfg):
+            elif _use_streaming(cfg, channel_kind):
                 # Production streaming: bubbles are sent AS generated; complete
                 # AFTER (the user already has the answer).
                 try:
@@ -647,6 +729,7 @@ def run_loop(
     cfg: WorkerConfig,
     *,
     convex: Optional[Any] = None,
+    channels: Optional[Any] = None,
     sendblue: Optional[Any] = None,
     process_fn: Callable[..., bool] = process_one,
     intent_fn: Optional[Callable[..., None]] = process_intents,
@@ -666,9 +749,15 @@ def run_loop(
     empty poll so the worker backs off and retries instead of dying.
     """
     convex = convex or ConvexClient(cfg.convex_url)
-    sendblue = sendblue or SendblueClient(
-        cfg.sendblue_key_id, cfg.sendblue_secret, cfg.sendblue_from
-    )
+    # Build the outbound channel registry. Production: from_config (Sendblue +
+    # Telegram if a bot token is set). Tests inject a single client via `channels=`
+    # or the legacy `sendblue=` — both are wrapped as an iMessage-only registry.
+    if channels is not None:
+        registry = _as_registry(channels, cfg)
+    elif sendblue is not None:
+        registry = _as_registry(sendblue, cfg)
+    else:
+        registry = ChannelRegistry.from_config(cfg)
     i = 0
     empties = 0
     last_intent: Optional[float] = None
@@ -680,7 +769,7 @@ def run_loop(
                 if last_intent is None or now - last_intent >= cfg.intent_interval:
                     intent_fn(convex, cfg)
                     last_intent = now
-            did = process_fn(convex, sendblue, cfg)
+            did = process_fn(convex, registry, cfg)
         except Exception:
             log.exception("worker iteration crashed")
             did = False

@@ -100,13 +100,20 @@ def test_process_one_marks_fail_and_sends_friendly_error_on_hermes_exception():
     assert "boom" not in sent  # don't leak internals to the user
 
 
-def test_process_one_replies_to_config_target_not_payload_number():
+def test_process_one_replies_to_claimed_reply_target_not_config():
+    # Multi-tenant routing (M2 keystone): the worker replies to the CLAIMED
+    # message's OWN address (set server-side by the authenticated inbound webhook),
+    # NOT a single hardcoded config target. The security property changed from "pin
+    # to a constant" to "per-message routing" — cross-tenant isolation now comes
+    # from the claim layer (claimNextForUser is userId-scoped) + verified inbound
+    # bindings, not from ignoring the payload. cfg.reply_target survives only as the
+    # legacy fallback for rows predating replyTarget/userNumber.
     convex = MagicMock()
-    convex.mutation.side_effect = [_claim(userNumber="+1ATTACKER"), None]
+    convex.mutation.side_effect = [_claim(replyTarget="+1USER", userNumber="+1USER"), None]
     sendblue = MagicMock()
     run_fn = MagicMock(return_value="ok")
     process_one(convex, sendblue, _cfg(reply_target="+1OWNER"), run_fn=run_fn)
-    assert sendblue.send_message.call_args.kwargs["to_number"] == "+1OWNER"
+    assert sendblue.send_message.call_args.kwargs["to_number"] == "+1USER"
 
 
 def test_process_one_truncates_long_reply():

@@ -22,6 +22,13 @@ for m in "${MODULES[@]}"; do
   cp "$SRC/$m" "$DEST/$m"
 done
 
+# Channel layer package (the multi-tenant reply path, M2). HARD dependency: the
+# worker does `from channels import ...`, so the WHOLE package must ship, not just
+# loose modules. Strip bytecode caches so a stale .pyc can't shadow fresh source.
+rm -rf "$DEST/channels"
+cp -R "$SRC/channels" "$DEST/channels"
+rm -rf "$DEST/channels/__pycache__"
+
 # SOUL.md — the fast lane reads it for the assistant's voice. Copied beside the
 # worker so _load_soul() finds it with no HERMES_HOME lookup.
 cp "$SRC/../personality/SOUL.md" "$DEST/SOUL.md"
