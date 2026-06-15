@@ -2,6 +2,7 @@ import { mutation } from "./_generated/server";
 import { v } from "convex/values";
 import { assertWorker, channelValidator, tierValidator } from "./lib/auth";
 import { PERIOD_MS } from "./billing/tiers";
+import { enqueueImpl } from "./messages";
 import {
   issuePairingTokenImpl,
   redeemTelegramImpl,
@@ -66,6 +67,29 @@ export const seedTwoTenants = mutation({
       status: "queued", receivedAt: now + 1,
     });
     return { userA, userB, msgA, msgB, textA, textB };
+  },
+});
+
+// Drive the REAL idempotent enqueue (messages.enqueueImpl) over HTTP so the
+// duplicate-webhook e2e (test_e2e_fleet_isolation.py) proves the live
+// by_channel_handle index dedups: two calls with the same (channel, handle)
+// return the SAME messageId (one row), not a re-implementation. Double-gated.
+export const testEnqueue = mutation({
+  args: {
+    workerSecret: v.string(),
+    handle: v.string(),
+    userId: v.optional(v.id("users")),
+    channel: v.optional(channelValidator),
+    replyTarget: v.optional(v.string()),
+    userNumber: v.string(),
+    text: v.string(),
+    mediaUrl: v.optional(v.string()),
+  },
+  returns: v.id("messages"),
+  handler: async (ctx, { workerSecret, ...args }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    return await enqueueImpl(ctx, args);
   },
 });
 

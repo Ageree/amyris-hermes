@@ -1,6 +1,7 @@
-import { mutation, internalMutation, query } from "./_generated/server";
+import { mutation, internalMutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { assertWorker, channelValidator } from "./lib/auth";
 
 // Durable inbound queue. Sendblue / Telegram webhooks enqueue here; the brain
@@ -16,6 +17,53 @@ import { assertWorker, channelValidator } from "./lib/auth";
 // userId/channel/replyTarget are optional during the additive migration window;
 // they tighten to required after backfill (design §10 step 9).
 // ---------------------------------------------------------------------------
+// Shared enqueue impl — the idempotent insert. Extracted so BOTH the webhook
+// internalMutation (enqueue) and the convex_e2e test seam (testing:testEnqueue)
+// drive the EXACT same code path against the live by_channel_handle index (so the
+// duplicate-webhook test proves the real idempotency, not a re-implementation).
+export type EnqueueArgs = {
+  handle: string;
+  userId?: Id<"users">;
+  channel?: "imessage" | "telegram";
+  replyTarget?: string;
+  userNumber: string;
+  text: string;
+  mediaUrl?: string;
+};
+
+export async function enqueueImpl(
+  ctx: MutationCtx,
+  args: EnqueueArgs,
+): Promise<Id<"messages">> {
+  // Dedup keyed by (channel, handle) when channel is known (Telegram update_ids
+  // and Sendblue handles share no namespace, so the compound key is the precise
+  // idempotency unit); fall back to the global by_handle for channel-less rows.
+  const existing = args.channel
+    ? await ctx.db
+        .query("messages")
+        .withIndex("by_channel_handle", (q) =>
+          q.eq("channel", args.channel).eq("handle", args.handle),
+        )
+        .first()
+    : await ctx.db
+        .query("messages")
+        .withIndex("by_handle", (q) => q.eq("handle", args.handle))
+        .first();
+  if (existing) return existing._id; // duplicate delivery — ignore
+
+  return await ctx.db.insert("messages", {
+    handle: args.handle,
+    userId: args.userId,
+    channel: args.channel,
+    replyTarget: args.replyTarget,
+    userNumber: args.userNumber,
+    text: args.text,
+    mediaUrl: args.mediaUrl,
+    status: "queued",
+    receivedAt: Date.now(),
+  });
+}
+
 export const enqueue = internalMutation({
   args: {
     handle: v.string(),
@@ -27,35 +75,7 @@ export const enqueue = internalMutation({
     mediaUrl: v.optional(v.string()),
   },
   returns: v.id("messages"),
-  handler: async (ctx, args) => {
-    // Dedup keyed by (channel, handle) when channel is known (Telegram update_ids
-    // and Sendblue handles share no namespace, so the compound key is the precise
-    // idempotency unit); fall back to the global by_handle for channel-less rows.
-    const existing = args.channel
-      ? await ctx.db
-          .query("messages")
-          .withIndex("by_channel_handle", (q) =>
-            q.eq("channel", args.channel).eq("handle", args.handle),
-          )
-          .first()
-      : await ctx.db
-          .query("messages")
-          .withIndex("by_handle", (q) => q.eq("handle", args.handle))
-          .first();
-    if (existing) return existing._id; // duplicate delivery — ignore
-
-    return await ctx.db.insert("messages", {
-      handle: args.handle,
-      userId: args.userId,
-      channel: args.channel,
-      replyTarget: args.replyTarget,
-      userNumber: args.userNumber,
-      text: args.text,
-      mediaUrl: args.mediaUrl,
-      status: "queued",
-      receivedAt: Date.now(),
-    });
-  },
+  handler: async (ctx, args) => enqueueImpl(ctx, args),
 });
 
 // Shared return shape for a claimed message. mediaUrl/channel/replyTarget/userId
