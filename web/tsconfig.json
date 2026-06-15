@@ -16,8 +16,8 @@
     "plugins": [{ "name": "next" }],
     "paths": {
       "@/*": ["./*"],
-      "@cp/api": ["../control-plane/convex/_generated/api"],
-      "@cp/*": ["../control-plane/convex/*"]
+      "@cp/api": ["./cp-generated/api"],
+      "@cp/*": ["./cp-generated/*"]
     }
   },
   "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
