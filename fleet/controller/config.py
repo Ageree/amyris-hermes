@@ -41,6 +41,13 @@ def _int_env(name: str, default: int) -> int:
         raise ValueError(f"Env var {name!r} must be an int, got {raw!r}") from exc
 
 
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.environ.get(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")
+
+
 @dataclass(frozen=True)
 class ControllerConfig:
     """Immutable configuration for the fleet controller.
@@ -69,12 +76,27 @@ class ControllerConfig:
     # Timing
     poll_interval_s: float
     stale_ttl_s: float
+    # Periodic crash-recovery GCS mirror (deferred item #2). State is otherwise
+    # mirrored only on a clean docker stop, so a crash loses everything written
+    # since the last stop. 0 disables the timer.
+    mirror_interval_s: float
 
     # Placement
     ram_headroom_pct: int
+    # Per-host container cap. The real fix for placement is a /metrics host agent
+    # (deferred); until then this lets the operator keep capacity CONSERVATIVE on a
+    # single VM (the deferral's interim guidance), e.g. CAPACITY_PER_HOST=5.
+    capacity_per_host: int
 
     # Failure thresholds
     max_launch_failures: int
+
+    # Per-instance Secret Manager secrets. OFF for v1: the worker reads the shared
+    # WORKER_SECRET, and claimNextForUser's server-side userId-scope IS the
+    # isolation boundary. The per-instance machinery (secrets.py + WORKER_SECRET_REF)
+    # is NOT wired (worker.py never reads the ref), so creating per-instance secrets
+    # would only mint empty, enumerable secrets. Flip ON only after wiring the read.
+    per_instance_secrets: bool
 
     def redacted(self) -> dict:
         """Return a log-safe view of config — no secret values."""
@@ -87,8 +109,11 @@ class ControllerConfig:
             "hosts": list(self.hosts),
             "poll_interval_s": self.poll_interval_s,
             "stale_ttl_s": self.stale_ttl_s,
+            "mirror_interval_s": self.mirror_interval_s,
             "ram_headroom_pct": self.ram_headroom_pct,
+            "capacity_per_host": self.capacity_per_host,
             "max_launch_failures": self.max_launch_failures,
+            "per_instance_secrets": self.per_instance_secrets,
             "worker_secret": "***",
         }
 
@@ -118,6 +143,9 @@ class ControllerConfig:
             hosts=hosts,
             poll_interval_s=_float_env("POLL_INTERVAL_S", 3.0),
             stale_ttl_s=_float_env("STALE_TTL_S", 90.0),
+            mirror_interval_s=_float_env("MIRROR_INTERVAL_S", 300.0),
             ram_headroom_pct=_int_env("RAM_HEADROOM_PCT", 30),
+            capacity_per_host=_int_env("CAPACITY_PER_HOST", 50),
             max_launch_failures=_int_env("MAX_LAUNCH_FAILURES", 3),
+            per_instance_secrets=_bool_env("PER_INSTANCE_SECRETS", False),
         )

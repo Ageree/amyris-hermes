@@ -16,6 +16,7 @@ Key rules:
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from typing import Callable, Optional
 
@@ -74,6 +75,17 @@ class StateSync:
         """
         gcs_path = self._gcs_path(user_id)
         local_path = self._local_path(user_id)
+        # Ensure the bind-mount SOURCE dir exists BEFORE docker run (Bug C5). The
+        # controller runs as the same uid (10001) as the container's non-root user,
+        # so a dir it creates is container-writable. Without this, docker would
+        # create the mount source as root → the container's uid 10001 gets EACCES on
+        # HERMES_HOME. We create it as ourselves (no chown — NoNewPrivileges-safe).
+        try:
+            os.makedirs(local_path, exist_ok=True)
+        except OSError as exc:
+            logger.error("state_sync rehydrate user=%s mkdir %s failed: %s",
+                         user_id, local_path, exc)
+            return False
         return self._rsync(
             src=gcs_path,
             dst=local_path,

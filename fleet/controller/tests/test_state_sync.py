@@ -19,21 +19,29 @@ def _fail_run(*args, **kwargs) -> subprocess.CompletedProcess:
 
 
 class TestRehydrate:
-    def test_rehydrate_returns_true_on_success(self):
-        ss = StateSync("my-bucket", run_cmd=_ok_run)
+    def test_rehydrate_returns_true_on_success(self, tmp_path):
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=_ok_run)
         assert ss.rehydrate("user1") is True
 
-    def test_rehydrate_returns_false_on_failure(self):
-        ss = StateSync("my-bucket", run_cmd=_fail_run)
+    def test_rehydrate_returns_false_on_failure(self, tmp_path):
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=_fail_run)
         assert ss.rehydrate("user1") is False
 
-    def test_rehydrate_calls_gcloud_storage_rsync(self):
+    def test_rehydrate_creates_local_bind_mount_dir(self, tmp_path):
+        # Bug C5: the bind-mount SOURCE must exist (owned by the controller uid,
+        # which equals the container's non-root uid 10001) BEFORE docker run, or the
+        # container gets EACCES on HERMES_HOME. rehydrate creates it as itself.
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=_ok_run)
+        ss.rehydrate("user1")
+        assert (tmp_path / "user1").is_dir()
+
+    def test_rehydrate_calls_gcloud_storage_rsync(self, tmp_path):
         calls = []
         def recording_run(cmd, **kwargs):
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        ss = StateSync("my-bucket", run_cmd=recording_run)
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=recording_run)
         ss.rehydrate("user1")
 
         assert len(calls) == 1
@@ -41,15 +49,15 @@ class TestRehydrate:
         assert cmd[0] == "gcloud"
         assert "rsync" in cmd
         assert "gs://my-bucket/tenants/user1/" in cmd
-        assert "/data/tenants/user1/" in cmd
+        assert f"{tmp_path}/user1/" in cmd
 
-    def test_rehydrate_excludes_lockfiles(self):
+    def test_rehydrate_excludes_lockfiles(self, tmp_path):
         calls = []
         def recording_run(cmd, **kwargs):
             calls.append(cmd)
             return subprocess.CompletedProcess(cmd, 0, "", "")
 
-        ss = StateSync("my-bucket", run_cmd=recording_run)
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=recording_run)
         ss.rehydrate("user1")
 
         cmd = calls[0]
@@ -57,11 +65,11 @@ class TestRehydrate:
         for pattern in _EXCLUDE_PATTERNS:
             assert pattern in cmd_str, f"Expected {pattern!r} in rsync command"
 
-    def test_rehydrate_failsoft_on_subprocess_exception(self):
+    def test_rehydrate_failsoft_on_subprocess_exception(self, tmp_path):
         def raising_run(*a, **kw):
             raise OSError("gcloud not found")
 
-        ss = StateSync("my-bucket", run_cmd=raising_run)
+        ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=raising_run)
         result = ss.rehydrate("user1")
         assert result is False
 

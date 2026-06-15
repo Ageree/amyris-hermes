@@ -1,0 +1,12 @@
+{"turn":1,"phase":"recon","event":"gcp_gate_verified","detail":"hermes-saved-content-lab reachable under solsav1703; billing ON; AR repo saved-content (us-central1); Compute Engine API NOT enabled"}
+{"turn":1,"phase":"recon","event":"operator_decision","detail":"reuse existing lab project (not a new project)"}
+{"turn":1,"phase":"recon","event":"firsthand_read","detail":"Dockerfile.fleet, cloudbuild.fleet.yaml, controller.py, docker_driver.py, secrets.py, config.py, fleet.ts, messages.ts, schema.ts"}
+{"turn":1,"phase":"recon","event":"hermes_repo_public","detail":"Ageree/hermes-agent is PUBLIC -> image clone needs no creds"}
+{"turn":1,"phase":"design","event":"workflow_launched","detail":"wf_2750bfd0-516: 6 recon -> 4 facet planners -> synthesis (running)"}
+{"turn":2,"phase":"implement","event":"image_fixed","detail":"Dockerfile.fleet: HERMES_GIT_URL=Ageree fork (no your-org), USER hermes uid 10001 post-pytest-gate, no VOLUME, HERMES_HOME=/data/tenants/default, PIP_DEFAULT_TIMEOUT/RETRIES, git clone retry wrapper"}
+{"turn":2,"phase":"implement","event":"cloudbuild_fixed","detail":"push target _REGION-docker.pkg.dev/$PROJECT_ID/_AR_REPO/hermes-fleet; _AR_REPO=saved-content"}
+{"turn":2,"phase":"implement","event":"provision_rewritten","detail":"single co-located e2-standard-2 debian-12 VM; AR repo saved-content; versioned GCS bucket; dedicated SA hermes-fleet least-privilege IAM; dropped 2nd VM + unattached disk; +vm-startup.sh"}
+{"turn":2,"phase":"implement","event":"contract_fixes","detail":"C3 model endpoint derived from key prefix (sk-or->OpenRouter); C5 rehydrate makedirs bind-mount as uid 10001"}
+{"turn":2,"phase":"implement","event":"deferred_closed","detail":"#2 GCS mirror timer (_mirror_running_tenants + MIRROR_INTERVAL_S=300, 4 tests); #1 capacity configurable (multi-host /metrics YAGNI for v1); #3 PER_INSTANCE_SECRETS flag OFF; #7 non-root done"}
+{"turn":2,"phase":"verify","event":"tests_green","detail":"controller 79 passed (75+4 mirror); lab 313 passed/21 deselected; hermetic image build uid=10001/no-VOLUME/USER hermes; provision dry-run OK"}
+{"turn":2,"phase":"verify","event":"full_build_flake","detail":"INSTALL_HERMES=1 build twice hit LOCAL-network transients (PyPI ReadTimeout, then git GnuTLS early-EOF at 318s) — fork/ref/Dockerfile sound (clone authenticates+pulls, chromium+base-pip OK). Added clone retry wrapper; retrying. Real path = Cloud Build (L3), reliable network."}

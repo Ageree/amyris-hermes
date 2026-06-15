@@ -209,35 +209,51 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
             logger.warning("env var %s is not set — container may misbehave", name)
         return v
 
+    # Model endpoint MUST match the funded key or EVERY model call 401s (Bug C3).
+    # The live key is an OpenRouter key (sk-or-*) → openrouter.ai/api/v1, model
+    # minimax/minimax-m3; a native MiniMax key → api.minimax.io/v1, MiniMax-M3.
+    # Derive base_url + model from the key prefix when the controller does not set
+    # them explicitly, so a forgotten MINIMAX_BASE_URL can't silently break every
+    # container. An explicit env value always wins (overridable).
+    minimax_key = _get("MINIMAX_API_KEY")
+    is_openrouter = minimax_key.startswith("sk-or-")
+    minimax_base_url = os.environ.get("MINIMAX_BASE_URL", "").strip() or (
+        "https://openrouter.ai/api/v1" if is_openrouter else "https://api.minimax.io/v1"
+    )
+    minimax_model = os.environ.get("MINIMAX_MODEL", "").strip() or (
+        "minimax/minimax-m3" if is_openrouter else "MiniMax-M3"
+    )
+
     # The names below MUST match EXACTLY what the worker's WorkerConfig.from_env()
     # bracket-reads, or the container crashes on boot (Bug C1). The worker reads:
     #   CONVEX_URL, WORKER_SECRET, SENDBLUE_API_KEY_ID, SENDBLUE_API_SECRET_KEY,
-    #   SENDBLUE_FROM_NUMBER  (all required); MINIMAX_BASE_URL is read with a
-    #   default but the funded sk-cp- Token Plan key only works against
-    #   api.minimax.io/v1, so we inject it explicitly (Bug M2).
+    #   SENDBLUE_FROM_NUMBER  (all required).
     # NOTE: ALLOWED_USER_NUMBER is INTENTIONALLY omitted — a scoped per-tenant
     #   worker routes each reply to the claimed message's own address (multi-tenant
     #   keystone); it must never be pinned to the operator's number.
-    return {
+    env = {
         "WORKER_MODE": "scoped",
         "USER_ID": user_id,
         "INSTANCE_ID": instance_id,
         "CONVEX_URL": cfg.convex_url,
         "WORKER_SECRET": _get("WORKER_SECRET"),
         "HERMES_HOME": f"/data/tenants/{user_id}",
-        "MINIMAX_API_KEY": _get("MINIMAX_API_KEY"),
-        "MINIMAX_MODEL": os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
-        "MINIMAX_BASE_URL": os.environ.get(
-            "MINIMAX_BASE_URL", "https://api.minimax.io/v1"
-        ),
+        "MINIMAX_API_KEY": minimax_key,
+        "MINIMAX_MODEL": minimax_model,
+        "MINIMAX_BASE_URL": minimax_base_url,
         "SENDBLUE_API_KEY_ID": _get("SENDBLUE_API_KEY_ID"),
         "SENDBLUE_API_SECRET_KEY": _get("SENDBLUE_API_SECRET_KEY"),
         "SENDBLUE_FROM_NUMBER": _get("SENDBLUE_FROM_NUMBER"),
         "TELEGRAM_BOT_TOKEN": _get("TELEGRAM_BOT_TOKEN"),
         "EXA_API_KEY": _get("EXA_API_KEY"),
-        # Secret Manager ref (not the value)
-        "WORKER_SECRET_REF": secret_ref,
     }
+    # Per-instance Secret Manager ref — injected ONLY when the (not-yet-wired)
+    # per-instance-secrets feature is on. The worker reads WORKER_SECRET directly and
+    # NEVER WORKER_SECRET_REF, so injecting it by default would be a dead, misleading
+    # env var (and would pair with empty Secret Manager secrets). See cfg docstring.
+    if cfg.per_instance_secrets and secret_ref:
+        env["WORKER_SECRET_REF"] = secret_ref
+    return env
 
 
 def _build_mounts(user_id: str) -> list[str]:
@@ -276,7 +292,10 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
         logger.error("All hosts full — cannot launch user=%s", user_id)
         return {"action": "launch_refused", "userId": user_id, "reason": "hosts_full"}
 
-    secret_ref = deps.secrets.ensure_worker_secret(user_id)
+    # Per-instance secret is OFF by default (v1 uses the shared WORKER_SECRET; the
+    # per-instance read isn't wired in the worker). Only mint one when the feature
+    # flag is on, so we don't create empty, enumerable Secret Manager secrets.
+    secret_ref = deps.secrets.ensure_worker_secret(user_id) if cfg.per_instance_secrets else ""
     deps.state_sync.rehydrate(user_id)
 
     env = _build_env(user_id, instance_id, cfg, secret_ref)
@@ -419,8 +438,11 @@ def _build_hosts_state(cfg: ControllerConfig, docker: DockerDriver) -> list[dict
         {
             "host": host,
             "running": counts.get(host, 0),
-            "capacity": 50,          # reasonable per-VM default
-            "ram_used_pct": 40,       # assume moderate load; real impl: query host
+            "capacity": cfg.capacity_per_host,  # CAPACITY_PER_HOST; keep conservative
+            # ponytail: ram_used_pct is a fabricated constant — placement refuses
+            # only on the container COUNT (capacity_per_host) until a real per-host
+            # /metrics agent feeds true RAM. Upgrade path: host-agent /metrics.
+            "ram_used_pct": 40,
         }
         for host in cfg.hosts
     ]
@@ -466,6 +488,40 @@ def reconcile_once(deps: ControllerDeps) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
+# Periodic crash-recovery mirror (deferred item #2)
+# ---------------------------------------------------------------------------
+
+
+def _mirror_running_tenants(deps: ControllerDeps) -> int:
+    """Best-effort GCS mirror of every running tenant's state. Returns count mirrored.
+
+    Closes deferred item #2: without this, state is mirrored only on a clean
+    `docker stop` (_do_stop), so a host/controller crash loses everything written
+    since the last stop. rehydrate-on-launch then restores the last mirror.
+
+    ponytail: this mirrors a LIVE bind-mount, so a snapshot can catch a mid-write
+    file; state_sync's WAL/journal/lock excludes skip the corruption-prone ones, and
+    a slightly-stale crash snapshot beats total loss. The only strictly-consistent
+    point remains the quiesce-then-mirror in _do_stop. Driven by MIRROR_INTERVAL_S.
+    """
+    try:
+        instances = deps.convex.list_reconcile()
+    except Exception as exc:  # fail-soft: a mirror miss must never kill the loop
+        logger.error("periodic mirror: list_reconcile failed: %s", exc)
+        return 0
+    n = 0
+    for inst in instances:
+        if inst.get("status") == "running":
+            uid = inst.get("userId")
+            if uid:
+                deps.state_sync.mirror(uid)  # fail-soft inside StateSync
+                n += 1
+    if n:
+        logger.info("periodic mirror: mirrored %d running tenant(s)", n)
+    return n
+
+
+# ---------------------------------------------------------------------------
 # run — the immortal loop
 # ---------------------------------------------------------------------------
 
@@ -492,6 +548,7 @@ def run(cfg: Optional[ControllerConfig] = None, *, once: bool = False) -> None:
     )
 
     backoff = 1.0
+    last_mirror = deps.now_fn()
 
     while True:
         try:
@@ -506,6 +563,11 @@ def run(cfg: Optional[ControllerConfig] = None, *, once: bool = False) -> None:
 
         if once:
             return
+
+        # Periodic crash-recovery mirror (deferred #2); MIRROR_INTERVAL_S=0 disables.
+        if cfg.mirror_interval_s > 0 and deps.now_fn() - last_mirror >= cfg.mirror_interval_s:
+            _mirror_running_tenants(deps)
+            last_mirror = deps.now_fn()
 
         time.sleep(cfg.poll_interval_s)
 

@@ -1,0 +1,12 @@
+{
+  "turn": 1,
+  "status": "open",
+  "started_at": "2026-06-15",
+  "project": "hermes-saved-content-lab",
+  "account": "solsav1703@gmail.com",
+  "ar_repo": "us-central1/saved-content",
+  "convex_dev": "zany-tapir-501",
+  "worktree": "worktree-gcp-fleet (base origin/main 049ada7)",
+  "driver": "interactive-lead-with-operator-checkpoints (not the autonomous bash loop — live GCP steps are operator-gated)",
+  "last_audit_at": null
+}

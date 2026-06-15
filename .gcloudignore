@@ -7,3 +7,9 @@ node_modules/
 .frankenstein/
 .claude/
 *.jsonl
+# Secrets must NEVER be uploaded to Cloud Build (defense-in-depth; .env.example kept).
+**/.env
+**/.env.*
+!**/.env.example
+**/*-secret
+**/.worker-secret

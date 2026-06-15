@@ -1,290 +1,208 @@
 #!/usr/bin/env bash
-# provision-host.sh — GCP host provisioning for the Hermes fleet (M6).
+# provision-host.sh — GCP provisioning for the Hermes fleet (M6, v1 single-VM).
 #
 # OPERATOR-RUN ONLY. Requires:
 #   - A funded GCP project with billing enabled.
 #   - gcloud CLI installed and authenticated (gcloud auth login / ADC).
-#   - Run with --apply to actually create resources; omit it (or use --dry-run)
-#     for a safe preview of the commands that WOULD run.
+#   - Run with --apply to actually create resources; omit it (or --dry-run) for a
+#     safe preview of the commands that WOULD run.
 #
-# Idempotent: every create is guarded by a `describe ... || create ...` check.
-# Every gcloud call explicitly passes --project=$PROJECT to avoid accidentally
-# operating on the gcloud default project (which may differ).
+# v1 topology = ONE co-located VM that runs BOTH the controller (systemd) and the
+# per-tenant containers (docker). No separate controller VM, no unattached disk:
+# tenant state lives on the boot disk under /data/tenants and is mirrored to GCS.
+#
+# Idempotent: each create is guarded by a describe-or-create probe; IAM bindings
+# and `services enable` are idempotent by nature. Every gcloud call passes
+# --project=$PROJECT explicitly so it never touches the gcloud default project.
 #
 # Usage:
-#   ./provision-host.sh [--project PROJECT] [--region REGION] [--zone ZONE]
-#                       [--apply | --dry-run]
+#   ./provision-host.sh [--project P] [--region R] [--zone Z]
+#                       [--machine-type M] [--apply | --dry-run]
 #
-# Environment overrides (lowest priority; flags take precedence):
-#   PROJECT, REGION, ZONE
-#
-# Exit codes:
-#   0 — success (or dry-run complete)
-#   1 — precondition failure or fatal error
-
+# Exit codes: 0 success (or dry-run); 1 precondition/fatal error.
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # ---------------------------------------------------------------------------
-# Defaults
+# Defaults (flags override; env overrides nothing — flags/defaults only)
 # ---------------------------------------------------------------------------
 PROJECT="${PROJECT:-hermes-saved-content-lab}"
 REGION="${REGION:-us-central1}"
 ZONE="${ZONE:-us-central1-a}"
-DRY_RUN=true   # safe by default; --apply overrides
+AR_REPO="saved-content"          # MUST match cloudbuild.fleet.yaml _AR_REPO + .env IMAGE
+BUCKET_NAME="hermes-fleet-state"
+SA_NAME="hermes-fleet"
+HOST_VM="hermes-fleet-host"
+# e2-standard-2 = 2 vCPU / 8 GB. ponytail: capacity scales with RAM. 8 GB holds the
+# controller + TWO chromium-running tenants (the isolation proof) with headroom;
+# e2-medium (4 GB) only fits a single tenant. Bump higher + raise CAPACITY_PER_HOST
+# to pack more tenants per host.
+HOST_MACHINE="e2-standard-2"
+BOOT_DISK_SIZE="50GB"            # image (multi-GB) + /data/tenants state + chromium cache
+DRY_RUN=true
 
-# ---------------------------------------------------------------------------
-# Argument parsing
-# ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --project)   PROJECT="$2"; shift 2 ;;
-        --region)    REGION="$2";  shift 2 ;;
-        --zone)      ZONE="$2";    shift 2 ;;
-        --apply)     DRY_RUN=false; shift  ;;
-        --dry-run)   DRY_RUN=true;  shift  ;;
-        *)
-            echo "ERROR: unknown argument: $1" >&2
-            echo "Usage: $0 [--project P] [--region R] [--zone Z] [--apply | --dry-run]" >&2
-            exit 1
-            ;;
+        --project)      PROJECT="$2"; shift 2 ;;
+        --region)       REGION="$2";  shift 2 ;;
+        --zone)         ZONE="$2";    shift 2 ;;
+        --machine-type) HOST_MACHINE="$2"; shift 2 ;;
+        --apply)        DRY_RUN=false; shift ;;
+        --dry-run)      DRY_RUN=true;  shift ;;
+        *) echo "ERROR: unknown argument: $1" >&2
+           echo "Usage: $0 [--project P] [--region R] [--zone Z] [--machine-type M] [--apply|--dry-run]" >&2
+           exit 1 ;;
     esac
 done
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+SA_EMAIL="${SA_NAME}@${PROJECT}.iam.gserviceaccount.com"
+BUCKET="gs://${BUCKET_NAME}"
+AR_HOST="${REGION}-docker.pkg.dev"
+IMAGE="${AR_HOST}/${PROJECT}/${AR_REPO}/hermes-fleet:latest"
 
-# Coloured log helpers (safe even without a terminal)
 _info()  { echo "[INFO]  $*"; }
 _warn()  { echo "[WARN]  $*" >&2; }
 _error() { echo "[ERROR] $*" >&2; }
 _abort() { _error "$*"; exit 1; }
 
-# run_cmd — in --apply mode: execute. In --dry-run mode: print only.
+# run_cmd — execute in --apply, print in --dry-run. For idempotent commands.
 run_cmd() {
-    if [[ "$DRY_RUN" == true ]]; then
-        echo "  [DRY-RUN] $*"
-    else
-        "$@"
-    fi
+    if [[ "$DRY_RUN" == true ]]; then echo "  [DRY-RUN] $*"; else "$@"; fi
+}
+
+# guarded_create <label> <probe...> -- <create...>
+# Runs <create> only if <probe> fails (resource absent). In dry-run, prints create.
+guarded_create() {
+    local label="$1"; shift
+    local probe=() create=() seen=0
+    for a in "$@"; do
+        if [[ "$a" == "--" ]]; then seen=1; continue; fi
+        if [[ $seen -eq 0 ]]; then probe+=("$a"); else create+=("$a"); fi
+    done
+    _info "$label"
+    if [[ "$DRY_RUN" == true ]]; then echo "  [DRY-RUN] ${create[*]}"; return 0; fi
+    if "${probe[@]}" &>/dev/null; then _info "  exists — skip"; else "${create[@]}"; fi
 }
 
 # ---------------------------------------------------------------------------
-# Banner
-# ---------------------------------------------------------------------------
 echo "======================================================================"
-echo "  Hermes Fleet — GCP host provisioner"
-echo "  PROJECT = $PROJECT"
-echo "  REGION  = $REGION"
-echo "  ZONE    = $ZONE"
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  MODE    = DRY-RUN (no changes will be made)"
-else
-    echo "  MODE    = APPLY (resources will be created)"
-fi
+echo "  Hermes Fleet — GCP provisioner (v1 single co-located VM)"
+echo "  PROJECT=$PROJECT  REGION=$REGION  ZONE=$ZONE  MACHINE=$HOST_MACHINE"
+echo "  IMAGE=$IMAGE"
+echo "  MODE=$([[ "$DRY_RUN" == true ]] && echo DRY-RUN || echo APPLY)"
 echo "======================================================================"
 echo ""
 
 # ---------------------------------------------------------------------------
 # Step 0: Preconditions
 # ---------------------------------------------------------------------------
-_info "Checking preconditions..."
-
-# gcloud installed?
-if ! command -v gcloud &>/dev/null; then
-    _abort "gcloud CLI not found. Install from https://cloud.google.com/sdk/docs/install"
-fi
-_info "gcloud found: $(gcloud version 2>/dev/null | head -1)"
-
-# An account must be active
-if ! gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null | grep -q '@'; then
-    _abort "No active gcloud account found. Run: gcloud auth login"
-fi
-ACTIVE_ACCOUNT="$(gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null | head -1)"
-_info "Active account: $ACTIVE_ACCOUNT"
-
-# Warn if the caller's gcloud default project differs from $PROJECT (easy foot-gun)
+_info "Step 0: preconditions"
+command -v gcloud &>/dev/null || _abort "gcloud not found. https://cloud.google.com/sdk/docs/install"
+_info "gcloud: $(gcloud version 2>/dev/null | head -1)"
+gcloud auth list --filter="status:ACTIVE" --format="value(account)" 2>/dev/null | grep -q '@' \
+    || _abort "No active gcloud account. Run: gcloud auth login"
+_info "account: $(gcloud auth list --filter='status:ACTIVE' --format='value(account)' 2>/dev/null | head -1)"
+[[ -f "${SCRIPT_DIR}/vm-startup.sh" ]] || _abort "missing ${SCRIPT_DIR}/vm-startup.sh"
 DEFAULT_PROJECT="$(gcloud config get-value project 2>/dev/null || true)"
-if [[ "$DEFAULT_PROJECT" != "$PROJECT" ]]; then
-    _warn "gcloud default project is '$DEFAULT_PROJECT'; provisioning into '$PROJECT' instead."
-    _warn "Every command below passes --project=$PROJECT explicitly."
-fi
-
+[[ "$DEFAULT_PROJECT" != "$PROJECT" ]] && \
+    _warn "gcloud default project '$DEFAULT_PROJECT' != target '$PROJECT' (every call passes --project)"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 1: Enable required APIs
+# Step 1: Enable APIs
 # ---------------------------------------------------------------------------
-_info "Step 1: Enabling required GCP APIs on project $PROJECT ..."
+_info "Step 1: enable APIs"
 run_cmd gcloud services enable \
     compute.googleapis.com \
-    secretmanager.googleapis.com \
     artifactregistry.googleapis.com \
     cloudbuild.googleapis.com \
+    storage.googleapis.com \
+    logging.googleapis.com \
+    secretmanager.googleapis.com \
     --project="$PROJECT"
-
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 2: Artifact Registry — docker repo `hermes`
+# Step 2: Artifact Registry repo (saved-content)
 # ---------------------------------------------------------------------------
-_info "Step 2: Artifact Registry repo 'hermes' (docker, $REGION) ..."
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] gcloud artifacts repositories describe hermes --location=$REGION --project=$PROJECT"
-    echo "  [DRY-RUN]   || gcloud artifacts repositories create hermes \\"
-    echo "  [DRY-RUN]       --repository-format=docker \\"
-    echo "  [DRY-RUN]       --location=$REGION \\"
-    echo "  [DRY-RUN]       --description='Hermes fleet container images' \\"
-    echo "  [DRY-RUN]       --project=$PROJECT"
-else
-    gcloud artifacts repositories describe hermes \
-        --location="$REGION" \
-        --project="$PROJECT" &>/dev/null \
-    || gcloud artifacts repositories create hermes \
-        --repository-format=docker \
-        --location="$REGION" \
-        --description="Hermes fleet container images" \
-        --project="$PROJECT"
-fi
-
+guarded_create "Step 2: AR repo '$AR_REPO' (docker, $REGION)" \
+    gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" --project="$PROJECT" \
+    -- \
+    gcloud artifacts repositories create "$AR_REPO" \
+        --repository-format=docker --location="$REGION" \
+        --description="Hermes fleet container images" --project="$PROJECT"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 3: GCS bucket for tenant state
+# Step 3: GCS bucket + object versioning (protects state against rsync --delete)
 # ---------------------------------------------------------------------------
-BUCKET="gs://hermes-fleet-state"
-_info "Step 3: GCS bucket $BUCKET (uniform access) ..."
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] gcloud storage buckets describe $BUCKET --project=$PROJECT"
-    echo "  [DRY-RUN]   || gcloud storage buckets create $BUCKET \\"
-    echo "  [DRY-RUN]       --location=$REGION \\"
-    echo "  [DRY-RUN]       --uniform-bucket-level-access \\"
-    echo "  [DRY-RUN]       --project=$PROJECT"
-else
-    gcloud storage buckets describe "$BUCKET" \
-        --project="$PROJECT" &>/dev/null \
-    || gcloud storage buckets create "$BUCKET" \
-        --location="$REGION" \
-        --uniform-bucket-level-access \
-        --project="$PROJECT"
-fi
-
+guarded_create "Step 3: GCS bucket $BUCKET (uniform access)" \
+    gcloud storage buckets describe "$BUCKET" --project="$PROJECT" \
+    -- \
+    gcloud storage buckets create "$BUCKET" \
+        --location="$REGION" --uniform-bucket-level-access --project="$PROJECT"
+_info "Step 3b: enable object versioning on $BUCKET"
+run_cmd gcloud storage buckets update "$BUCKET" --versioning --project="$PROJECT"
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 4: Persistent disk for tenant state
+# Step 4: Service account + IAM
 # ---------------------------------------------------------------------------
-DISK_NAME="hermes-fleet-state-disk"
-DISK_SIZE="50GB"
-DISK_TYPE="pd-balanced"
-_info "Step 4: Persistent disk '$DISK_NAME' ($DISK_SIZE, $DISK_TYPE) in $ZONE ..."
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] gcloud compute disks describe $DISK_NAME --zone=$ZONE --project=$PROJECT"
-    echo "  [DRY-RUN]   || gcloud compute disks create $DISK_NAME \\"
-    echo "  [DRY-RUN]       --size=$DISK_SIZE \\"
-    echo "  [DRY-RUN]       --type=$DISK_TYPE \\"
-    echo "  [DRY-RUN]       --zone=$ZONE \\"
-    echo "  [DRY-RUN]       --project=$PROJECT"
-else
-    gcloud compute disks describe "$DISK_NAME" \
-        --zone="$ZONE" \
-        --project="$PROJECT" &>/dev/null \
-    || gcloud compute disks create "$DISK_NAME" \
-        --size="$DISK_SIZE" \
-        --type="$DISK_TYPE" \
-        --zone="$ZONE" \
-        --project="$PROJECT"
-fi
+guarded_create "Step 4: service account $SA_EMAIL" \
+    gcloud iam service-accounts describe "$SA_EMAIL" --project="$PROJECT" \
+    -- \
+    gcloud iam service-accounts create "$SA_NAME" \
+        --display-name="Hermes fleet controller+containers" --project="$PROJECT"
 
+_info "Step 4b: IAM — artifactregistry.reader (docker pull) + logging.logWriter (project)"
+run_cmd gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:$SA_EMAIL" --role="roles/artifactregistry.reader" --condition=None
+run_cmd gcloud projects add-iam-policy-binding "$PROJECT" \
+    --member="serviceAccount:$SA_EMAIL" --role="roles/logging.logWriter" --condition=None
+
+_info "Step 4c: IAM — storage.objectAdmin scoped to the state bucket (least privilege)"
+run_cmd gcloud storage buckets add-iam-policy-binding "$BUCKET" \
+    --member="serviceAccount:$SA_EMAIL" --role="roles/storage.objectAdmin" --project="$PROJECT"
+
+# ponytail: PER_INSTANCE_SECRETS defaults OFF (shared WORKER_SECRET via env). When
+# you flip it on, grant secretmanager.admin here:
+#   gcloud projects add-iam-policy-binding "$PROJECT" \
+#       --member="serviceAccount:$SA_EMAIL" --role="roles/secretmanager.admin" --condition=None
 echo ""
 
 # ---------------------------------------------------------------------------
-# Step 5: Host VM (e2-standard-8, Docker via startup script)
+# Step 5: The single co-located VM (debian-12, SA attached, startup-script)
 # ---------------------------------------------------------------------------
-HOST_VM="hermes-fleet-host"
-HOST_MACHINE="e2-standard-8"
-HOST_DISK_SIZE="32GB"
-_info "Step 5: Host VM '$HOST_VM' ($HOST_MACHINE, $HOST_DISK_SIZE boot disk) ..."
-
-# Startup script installs Docker and enables it on boot.
-# Written inline so the script is self-contained (no external file dependency).
-STARTUP_SCRIPT=$(cat <<'STARTUP'
-#!/bin/bash
-set -euo pipefail
-if ! command -v docker &>/dev/null; then
-    apt-get update -y
-    apt-get install -y docker.io
-    systemctl enable docker
-    systemctl start docker
-fi
-STARTUP
-)
-
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] gcloud compute instances describe $HOST_VM --zone=$ZONE --project=$PROJECT"
-    echo "  [DRY-RUN]   || gcloud compute instances create $HOST_VM \\"
-    echo "  [DRY-RUN]       --machine-type=$HOST_MACHINE \\"
-    echo "  [DRY-RUN]       --boot-disk-size=$HOST_DISK_SIZE \\"
-    echo "  [DRY-RUN]       --zone=$ZONE \\"
-    echo "  [DRY-RUN]       --metadata=startup-script=<docker-install-script> \\"
-    echo "  [DRY-RUN]       --scopes=cloud-platform \\"
-    echo "  [DRY-RUN]       --project=$PROJECT"
-else
-    gcloud compute instances describe "$HOST_VM" \
-        --zone="$ZONE" \
-        --project="$PROJECT" &>/dev/null \
-    || gcloud compute instances create "$HOST_VM" \
+guarded_create "Step 5: VM '$HOST_VM' ($HOST_MACHINE, debian-12, $BOOT_DISK_SIZE)" \
+    gcloud compute instances describe "$HOST_VM" --zone="$ZONE" --project="$PROJECT" \
+    -- \
+    gcloud compute instances create "$HOST_VM" \
         --machine-type="$HOST_MACHINE" \
-        --boot-disk-size="$HOST_DISK_SIZE" \
+        --image-family=debian-12 --image-project=debian-cloud \
+        --boot-disk-size="$BOOT_DISK_SIZE" --boot-disk-type=pd-balanced \
         --zone="$ZONE" \
-        --metadata="startup-script=${STARTUP_SCRIPT}" \
+        --service-account="$SA_EMAIL" \
         --scopes=cloud-platform \
+        --metadata=fleet-ar-host="$AR_HOST" \
+        --metadata-from-file=startup-script="${SCRIPT_DIR}/vm-startup.sh" \
         --project="$PROJECT"
-fi
-
 echo ""
 
-# ---------------------------------------------------------------------------
-# Step 6: Controller VM (e2-small)
-# ---------------------------------------------------------------------------
-CTRL_VM="hermes-fleet-controller"
-CTRL_MACHINE="e2-small"
-_info "Step 6: Controller VM '$CTRL_VM' ($CTRL_MACHINE) ..."
-if [[ "$DRY_RUN" == true ]]; then
-    echo "  [DRY-RUN] gcloud compute instances describe $CTRL_VM --zone=$ZONE --project=$PROJECT"
-    echo "  [DRY-RUN]   || gcloud compute instances create $CTRL_VM \\"
-    echo "  [DRY-RUN]       --machine-type=$CTRL_MACHINE \\"
-    echo "  [DRY-RUN]       --zone=$ZONE \\"
-    echo "  [DRY-RUN]       --scopes=cloud-platform \\"
-    echo "  [DRY-RUN]       --project=$PROJECT"
-else
-    gcloud compute instances describe "$CTRL_VM" \
-        --zone="$ZONE" \
-        --project="$PROJECT" &>/dev/null \
-    || gcloud compute instances create "$CTRL_VM" \
-        --machine-type="$CTRL_MACHINE" \
-        --zone="$ZONE" \
-        --scopes=cloud-platform \
-        --project="$PROJECT"
-fi
-
-echo ""
-
-# ---------------------------------------------------------------------------
-# Summary
 # ---------------------------------------------------------------------------
 echo "======================================================================"
 echo "  Provisioning summary"
-echo "  Project   : $PROJECT"
-echo "  Region    : $REGION"
-echo "  Zone      : $ZONE"
-echo "  AR repo   : $REGION-docker.pkg.dev/$PROJECT/hermes"
-echo "  GCS bucket: $BUCKET"
-echo "  Disk      : $DISK_NAME ($DISK_SIZE $DISK_TYPE) in $ZONE"
-echo "  Host VM   : $HOST_VM ($HOST_MACHINE) in $ZONE"
-echo "  Ctrl VM   : $CTRL_VM ($CTRL_MACHINE) in $ZONE"
+echo "  AR repo   : ${AR_HOST}/${PROJECT}/${AR_REPO}"
+echo "  Image     : $IMAGE"
+echo "  GCS bucket: $BUCKET (versioned)"
+echo "  SA        : $SA_EMAIL (artifactregistry.reader, logging.logWriter, bucket objectAdmin)"
+echo "  VM        : $HOST_VM ($HOST_MACHINE) in $ZONE — controller + containers"
 if [[ "$DRY_RUN" == true ]]; then
     echo ""
     echo "  DRY-RUN complete. Re-run with --apply to create resources."
+else
+    echo ""
+    echo "  Next: build+push the image (cloudbuild.fleet.yaml), then deploy the"
+    echo "  controller onto $HOST_VM (/opt/hermes-fleet + /etc/hermes-fleet/controller.env)."
 fi
 echo "======================================================================"

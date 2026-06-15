@@ -18,7 +18,7 @@
 #   $_INSTALL_HERMES — 1 = full production image with Hermes + Chromium;
 #                      0 = hermetic gate only (default, safe for PR checks)
 #
-# Registry path: us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet
+# Registry path: ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet
 # Two tags are pushed: :<SHORT_SHA> (immutable, for rollbacks) and :latest
 # (floating, for convenience).  Deployments should pin the SHA tag.
 # =============================================================================
@@ -26,6 +26,10 @@
 substitutions:
   _HERMES_REF: "main"
   _INSTALL_HERMES: "1"
+  _REGION: "us-central1"
+  # The REAL Artifact Registry repo. Was a non-existent "hermes" repo (push 404).
+  # Parameterized so a brand-new PROJECT_ID can override region/repo without edits.
+  _AR_REPO: "saved-content"
   # SHORT_SHA is injected automatically by Cloud Build triggers; you must pass
   # it explicitly for manual `gcloud builds submit` invocations.
 
@@ -48,9 +52,9 @@ steps:
       - "INSTALL_HERMES=${_INSTALL_HERMES}"
       # Tag with the immutable SHA first; we'll add :latest in the push step.
       - --tag
-      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:$SHORT_SHA"
       - --tag
-      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:latest"
       # Build context is the REPO ROOT so the Dockerfile can COPY lab/skeleton.
       - .
     # Give the build enough headroom for apt + pip + Hermes clone + pytest gate.
@@ -64,7 +68,7 @@ steps:
     waitFor: ["build-fleet-image"]
     args:
       - push
-      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:$SHORT_SHA"
 
   # ---------------------------------------------------------------------------
   # Step 3 — Push :latest (floating; for convenience — pin SHA in deployments)
@@ -74,12 +78,12 @@ steps:
     waitFor: ["build-fleet-image"]
     args:
       - push
-      - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:latest"
 
 # Images to register with Cloud Build for vulnerability scanning + provenance.
 images:
-  - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:$SHORT_SHA"
-  - "us-central1-docker.pkg.dev/$PROJECT_ID/hermes/hermes-fleet:latest"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-fleet:latest"
 
 options:
   logging: CLOUD_LOGGING_ONLY

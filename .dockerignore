@@ -1,0 +1,35 @@
+# Build context for Dockerfile.fleet is the repo root, but the image only COPYs
+# lab/skeleton, lab/tests, lab/pytest.ini. Exclude everything heavy or secret so
+# `gcloud builds submit .` uploads a small, secret-free context.
+
+# Dependencies / build artifacts
+**/node_modules
+**/.next
+**/dist
+**/build
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+**/.venv
+**/venv
+
+# VCS / tooling
+.git
+.gitignore
+.claude
+.harness
+
+# Secrets / local env — NEVER ship into a build context
+**/.env
+**/.env.*
+!**/.env.example
+**/.vercel
+**/*-secret
+**/.worker-secret
+
+# Not needed by the fleet image
+web
+docs
+control-plane
+scripts
+*.md

@@ -17,8 +17,9 @@
 #              MINIMAX_API_KEY  INSTANCE_ID
 #   Optional:  TELEGRAM_BOT_TOKEN  TELEGRAM_WEBHOOK_SECRET  EXA_API_KEY
 #              MINIMAX_MODEL (default MiniMax-M3)  FAST_LANE_ENABLED  etc.
-#   Volume:    HERMES_HOME — writable mount for persistent agent state (profiles,
-#              config, SOUL.md). NEVER baked in; always a runtime volume.
+#   Bind mount: HERMES_HOME — writable host path for persistent agent state
+#              (profiles, config, SOUL.md). NEVER baked in; supplied at runtime as
+#              a bind mount (/data/tenants/<userId>), not a Docker VOLUME.
 #
 # NOTE: NO ALLOWED_USER_NUMBER in scoped mode. Routing is done per-row by the
 # worker's A2 mechanism (replyTarget / userNumber in the claimed message).
@@ -26,6 +27,10 @@
 
 ARG INSTALL_HERMES=0
 ARG HERMES_REF=main
+# Hermes runtime source. Default = the PUBLIC Ageree fork (Cloud Build clones it
+# with no creds). Override via --build-arg HERMES_GIT_URL=... for a private fork
+# without editing this file.
+ARG HERMES_GIT_URL=https://github.com/Ageree/hermes-agent.git
 
 # ---------------------------------------------------------------------------
 # Stage 1: base — system deps, tini, worker Python deps
@@ -46,6 +51,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# pip resilience: heavy installs (esp. the Hermes runtime) can hit transient PyPI
+# read timeouts. Retry + a longer timeout make the build robust to network flakes
+# (inherited by the isolated build-dependency pip too, via PIP_* env).
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5
 
 # Copy the skeleton worker modules.  We COPY only what worker.py transitively
 # needs at import time so that a change to an unrelated script doesn't bust
@@ -71,6 +82,7 @@ FROM base AS with-hermes-0
 
 FROM base AS with-hermes-1
 ARG HERMES_REF
+ARG HERMES_GIT_URL
 # Install Chromium for the persistent agent-browser profile (headless CDP).
 # Guarded inside this stage so the hermetic gate (stage with-hermes-0) stays
 # network-free and doesn't pull apt packages.
@@ -94,13 +106,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libxtst6 \
     && rm -rf /var/lib/apt/lists/*
 
-# Clone the Hermes runtime and install it.  The clone target is ~/hermes-agent
+# Clone the Hermes runtime and install it.  The clone target is /opt/hermes-agent
 # inside the image; the runtime venv is at /opt/hermes-agent/venv.
-# HERMES_HOME is a VOLUME (see below) and must NOT be baked in — it holds
-# mutable state (profiles, SOUL.md, config.yaml, .env) that varies per tenant.
-RUN git clone --depth 1 --branch "${HERMES_REF}" \
-        https://github.com/your-org/hermes-agent.git \
-        /opt/hermes-agent \
+# HERMES_HOME is a runtime bind-mount (per-tenant) and must NOT be baked in — it
+# holds mutable state (profiles, SOUL.md, config.yaml, .env) that varies per tenant.
+# Clone is retried up to 3x: a large shallow clone over a flaky link can drop
+# mid-transfer (curl 56 / GnuTLS recv / "early EOF"). postBuffer + low-speed abort
+# make a stalled transfer fail fast so the retry kicks in instead of hanging.
+RUN git config --global http.postBuffer 524288000 \
+    && git config --global http.lowSpeedLimit 1000 \
+    && git config --global http.lowSpeedTime 60 \
+    && for i in 1 2 3; do \
+        rm -rf /opt/hermes-agent \
+        && git clone --depth 1 --single-branch --branch "${HERMES_REF}" \
+            "${HERMES_GIT_URL}" /opt/hermes-agent \
+        && break \
+        || { echo "git clone attempt $i failed; retrying in 5s"; sleep 5; }; \
+    done \
+    && test -d /opt/hermes-agent/.git \
     && python -m venv /opt/hermes-agent/venv \
     && /opt/hermes-agent/venv/bin/pip install --no-cache-dir -e /opt/hermes-agent
 
@@ -149,17 +172,18 @@ RUN cd /app && \
 # Runtime configuration
 # ---------------------------------------------------------------------------
 
-# HERMES_HOME is a writable, per-tenant volume.  The entrypoint script will
-# wait for it to be populated (or fall back to defaults) before starting.
-# We declare it here so Docker knows it's external state.
-VOLUME ["/hermes-home"]
+# HERMES_HOME is a writable, per-tenant directory supplied at runtime as a host
+# BIND MOUNT (controller injects HERMES_HOME=/data/tenants/<userId> and mounts
+# that path). We deliberately do NOT declare `VOLUME` here: a VOLUME at an
+# unmounted default path creates a dangling anonymous volume per container and
+# masks the real contract. The controller's bind mount is the only state surface.
 
 # Expose no ports: the worker is purely outbound (polls Convex, calls APIs).
 # A future healthcheck endpoint could be exposed here.
 
 # Default env — overridden at runtime by docker run / compose env_file.
 ENV WORKER_MODE=scoped \
-    HERMES_HOME=/hermes-home \
+    HERMES_HOME=/data/tenants/default \
     HERMES_DIR=/opt/hermes-agent \
     HERMES_PYTHON_BIN=/opt/hermes-agent/venv/bin/python \
     MINIMAX_MODEL=MiniMax-M3 \
@@ -171,11 +195,24 @@ ENV WORKER_MODE=scoped \
     PYTHONPATH=/app/skeleton \
     PYTHONUNBUFFERED=1
 
+# Run the worker as a NON-ROOT user (defense-in-depth: a container escape or a
+# rogue tool can't reach the co-located host/controller/other tenants as root).
+# uid/gid pinned to 10001 so the VM can chown the host bind-mount dir
+# (/data/tenants/<userId>) to the same id deterministically. Created AFTER the
+# in-image pytest gate (which runs as root) and BEFORE the worker runs.
+RUN groupadd -g 10001 hermes \
+    && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin hermes \
+    && mkdir -p /data/tenants/default \
+    && chown -R hermes:hermes /app /data/tenants \
+    && if [ -d /opt/hermes-agent ]; then chown -R hermes:hermes /opt/hermes-agent; fi
+
 WORKDIR /app/skeleton
 
 # tini as PID 1: forwards signals correctly so `docker stop` terminates the
 # worker gracefully (SIGTERM -> Python shutdown -> no orphan processes).
 ENTRYPOINT ["/usr/bin/tini", "--"]
+
+USER hermes
 
 # Default CMD: run the worker in scoped mode.  All required env vars
 # (CONVEX_URL, WORKER_SECRET, USER_ID, etc.) must be injected at runtime.

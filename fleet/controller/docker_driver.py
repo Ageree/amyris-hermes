@@ -7,6 +7,12 @@ Security notes:
 - Secret VALUES (WORKER_SECRET, API keys) are passed via `env` at runtime but
   NEVER written to container names, log lines, or intermediate files.
 - Container names use only userId (safe, non-secret identifier).
+- ponytail: `docker run --env K=V` puts values on the argv, so they are visible
+  to same-host users via `ps`/`/proc/<pid>/cmdline` and in `docker inspect`. On
+  the v1 single co-located VM the controller and containers share ONE trust
+  domain (the `hermes-fleet` user already reads controller.env), so no trust
+  boundary is crossed. Upgrade path if hosts ever become multi-tenant across
+  trust domains: write a mode-0600 temp env-file and pass `--env-file` instead.
 """
 from __future__ import annotations
 

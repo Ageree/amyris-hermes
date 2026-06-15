@@ -17,6 +17,7 @@ from controller import (
     _do_launch,
     _do_relaunch,
     _do_stop,
+    _mirror_running_tenants,
     reconcile_once,
     run,
 )
@@ -141,14 +142,20 @@ class TestDoLaunch:
         _do_launch(self._inst(userId="u1"), deps)
         assert "u1" in fake_state_sync.rehydrated
 
-    def test_launch_ensures_worker_secret(self, deps, fake_secrets):
+    def test_launch_skips_worker_secret_when_disabled(self, deps, fake_secrets, fake_docker):
+        # v1 default: PER_INSTANCE_SECRETS off -> do NOT mint a per-instance secret
+        # (avoids empty, enumerable Secret Manager secrets) and do NOT inject a dead
+        # WORKER_SECRET_REF the worker never reads.
+        assert deps.cfg.per_instance_secrets is False
+        _do_launch(self._inst(userId="u1"), deps)
+        assert fake_secrets.ensured == []
+        assert "WORKER_SECRET_REF" not in fake_docker.ran[0]["env"]
+
+    def test_launch_ensures_worker_secret_when_enabled(self, deps, fake_secrets, fake_docker):
+        deps.cfg = replace(deps.cfg, per_instance_secrets=True)
         _do_launch(self._inst(userId="u1"), deps)
         assert "u1" in fake_secrets.ensured
-
-    def test_launch_secret_ref_in_env(self, deps, fake_docker):
-        _do_launch(self._inst(userId="u1"), deps)
-        env = fake_docker.ran[0]["env"]
-        assert env.get("WORKER_SECRET_REF") == "hermes-worker-u1"
+        assert fake_docker.ran[0]["env"].get("WORKER_SECRET_REF") == "hermes-worker-u1"
 
     def test_launch_mounts_user_dir(self, deps, fake_docker):
         _do_launch(self._inst(userId="u1"), deps)
@@ -586,3 +593,98 @@ class TestBuildEnvBootsWorker:
         assert cfg.sendblue_from == "+16466208124"
         assert cfg.minimax_base_url == "https://api.minimax.io/v1"
         assert cfg.scoped_user_id == "u1"
+
+
+# ---------------------------------------------------------------------------
+# Bug C3 — model endpoint MUST match the funded key. The live key is an
+# OpenRouter key (sk-or-*) → openrouter.ai; a native MiniMax key → api.minimax.io.
+# Derived from the key prefix so a forgotten MINIMAX_BASE_URL can't silently 401
+# every container. An explicit env value always wins.
+# ---------------------------------------------------------------------------
+
+class TestModelEndpointContract:
+    def _clear_overrides(self, monkeypatch) -> None:
+        monkeypatch.delenv("MINIMAX_BASE_URL", raising=False)
+        monkeypatch.delenv("MINIMAX_MODEL", raising=False)
+
+    def test_openrouter_key_derives_openrouter_endpoint(self, test_cfg, monkeypatch):
+        self._clear_overrides(monkeypatch)
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-or-v1-abc123")
+        env = _build_env("u1", "inst1", test_cfg, "")
+        assert env["MINIMAX_BASE_URL"] == "https://openrouter.ai/api/v1"
+        assert env["MINIMAX_MODEL"] == "minimax/minimax-m3"
+
+    def test_native_key_derives_native_endpoint(self, test_cfg, monkeypatch):
+        self._clear_overrides(monkeypatch)
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-cp-nativekey")
+        env = _build_env("u1", "inst1", test_cfg, "")
+        assert env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
+        assert env["MINIMAX_MODEL"] == "MiniMax-M3"
+
+    def test_explicit_base_url_overrides_derivation(self, test_cfg, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-or-v1-abc123")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://custom.example/v1")
+        env = _build_env("u1", "inst1", test_cfg, "")
+        assert env["MINIMAX_BASE_URL"] == "https://custom.example/v1"
+
+
+# ---------------------------------------------------------------------------
+# CAPACITY_PER_HOST — placement capacity is configurable so a single VM can be
+# capped conservatively (deferred-item #1 interim guidance: fabricated host
+# metrics; keep capacity conservative until a real /metrics agent exists).
+# ---------------------------------------------------------------------------
+
+class TestCapacityConfig:
+    def test_capacity_per_host_default(self, test_cfg):
+        assert test_cfg.capacity_per_host == 50
+
+    def test_capacity_per_host_from_env(self, monkeypatch):
+        monkeypatch.setenv("CONVEX_URL", "https://t.convex.cloud")
+        monkeypatch.setenv("WORKER_SECRET", "s")
+        monkeypatch.setenv("IMAGE", "img")
+        monkeypatch.setenv("CAPACITY_PER_HOST", "5")
+        from config import ControllerConfig
+        cfg = ControllerConfig.from_env()
+        assert cfg.capacity_per_host == 5
+
+
+# ---------------------------------------------------------------------------
+# Periodic crash-recovery mirror (deferred-item #2): _mirror_running_tenants
+# mirrors ONLY running tenants, fail-soft, independent of container naming.
+# ---------------------------------------------------------------------------
+
+class TestPeriodicMirror:
+    def _deps_with(self, instances, fake_convex, fake_docker, fake_state_sync,
+                   fake_secrets, test_cfg):
+        fake_convex._instances = instances
+        return ControllerDeps(
+            cfg=test_cfg, convex=fake_convex, docker=fake_docker,
+            state_sync=fake_state_sync, secrets=fake_secrets,
+            now_fn=lambda: 1_000_000.0,
+        )
+
+    def test_mirrors_only_running_tenants(self, deps):
+        deps.convex._instances = [
+            {"userId": "u1", "status": "running"},
+            {"userId": "u2", "status": "stopped"},
+            {"userId": "u3", "status": "provisioning"},
+            {"userId": "u4", "status": "running"},
+        ]
+        n = _mirror_running_tenants(deps)
+        assert n == 2
+        assert sorted(deps.state_sync.mirrored) == ["u1", "u4"]
+
+    def test_no_running_tenants_mirrors_nothing(self, deps):
+        deps.convex._instances = [{"userId": "u1", "status": "stopped"}]
+        assert _mirror_running_tenants(deps) == 0
+        assert deps.state_sync.mirrored == []
+
+    def test_failsoft_when_list_reconcile_raises(self, deps):
+        def boom():
+            raise RuntimeError("convex down")
+        deps.convex.list_reconcile = boom
+        # Must not propagate — a mirror miss can never kill the reconcile loop.
+        assert _mirror_running_tenants(deps) == 0
+
+    def test_mirror_interval_default_is_300(self, test_cfg):
+        assert test_cfg.mirror_interval_s == 300.0
