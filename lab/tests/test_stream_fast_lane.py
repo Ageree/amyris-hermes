@@ -71,6 +71,25 @@ def test_streaming_direct_answer_emits_one_bubble():
     assert s.calls[0]["stream"] is True
 
 
+def test_streaming_openrouter_uses_reasoning_enabled_false():
+    """LIVE PROD PATH: streaming stage-1 against OpenRouter sends the gateway's own
+    kill-switch `reasoning:{enabled:false}` — NOT MiniMax's native `thinking` (which
+    OpenRouter ignores, tripling reasoning tokens). Guards _apply_reasoning_off on the
+    streaming branch (prod runs STREAMING_ENABLED=True over openrouter.ai)."""
+    s = FakeStreamSession([StreamResp(_sse(["прив", "ет!"]))])
+    bubbles, sink = _collect()
+    res = stream_fast_reply(
+        "привет", on_bubble=sink, api_key="k", soul="voice",
+        base_url="https://openrouter.ai/api/v1", model="minimax/minimax-m3", session=s,
+    )
+    assert bubbles == ["привет!"]
+    assert res.deferred is False and res.errored is False
+    body = s.calls[0]["json"]
+    assert body["stream"] is True
+    assert body["reasoning"] == {"enabled": False}
+    assert "thinking" not in body
+
+
 def test_streaming_multiparagraph_emits_each_paragraph_as_a_bubble():
     pieces = ["первое сообщение", "\n\n", "второе ", "сообщение", "\n\n", "третье"]
     s = FakeStreamSession([StreamResp(_sse(pieces))])
