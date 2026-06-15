@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  // The generated Convex API (imported via the @cp/* alias) lives outside web/;
-  // allow Next to resolve + transpile it from the sibling control-plane dir.
-  outputFileTracingRoot: new URL("..", import.meta.url).pathname,
+  // The Convex API stub the app imports via the @cp/* alias is vendored INSIDE
+  // web/ (./cp-generated), so the build is self-contained — no outside-root file
+  // tracing or Vercel "include files outside the Root Directory" toggle needed.
 };
 
 export default nextConfig;

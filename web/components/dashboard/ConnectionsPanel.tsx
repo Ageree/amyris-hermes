@@ -10,6 +10,15 @@ import { StatusDot } from "@/components/ui/badge";
 
 type Channel = "imessage" | "telegram";
 
+// Mirror of one channels:myChannels row (control-plane returns this shape). We
+// annotate the .map() callback so it stays typed regardless of how the generated
+// api module's types resolve — mirrors the ConnectWizard ChannelBinding pattern.
+interface ChannelRow {
+  kind: Channel;
+  address: string;
+  verified: boolean;
+}
+
 // keep only the last 4 of a phone / chat-id; mask the rest. telegram chat-ids and
 // imessage numbers are both opaque-ish strings, so a uniform tail mask reads well.
 function maskAddress(address: string): string {
@@ -59,7 +68,7 @@ export function ConnectionsPanel() {
           <EmptyState />
         ) : (
           <ul className="flex flex-col gap-2">
-            {channels.map((c) => (
+            {channels.map((c: ChannelRow) => (
               <ConnectionRow
                 key={`${c.kind}:${c.address}`}
                 kind={c.kind}

@@ -129,8 +129,13 @@ def test_run_loop_polls_intents_on_wall_clock():
 # ---- Finding 7: non-M3 model flagged -----------------------------------------
 
 def test_fast_lane_model_ok_only_for_m3():
+    # Native MiniMax id
     assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="MiniMax-M3")) is True
     assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="MiniMax-M2.7")) is False
+    # OpenRouter slug for the SAME M3 model (the assistant runs M3 via OpenRouter)
+    assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="minimax/minimax-m3")) is True
+    # An OpenRouter M2.x slug still keeps reasoning on -> rejected
+    assert worker._fast_lane_model_ok(_cfg_fast(minimax_model="minimax/minimax-m2.7")) is False
 
 
 # ---- Medium lane: worker forwards the think params to fast_reply --------------

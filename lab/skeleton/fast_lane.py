@@ -160,6 +160,22 @@ def _build_messages(soul: str, rules: str, history: Optional[list], message: str
     return messages
 
 
+def _apply_reasoning_off(body: dict, base_url: str) -> None:
+    """Disable model reasoning IN PLACE, using the running provider's parameter.
+
+    MiniMax native (api.minimax.io) honors `thinking:{"type":"disabled"}` — the M3
+    kill-switch. OpenRouter (openrouter.ai) does NOT accept `thinking`; its switch is
+    `reasoning:{"enabled":false}`. Selecting by base_url keeps the native path
+    byte-for-byte unchanged while making the OpenRouter swap reasoning-off too — so
+    the fast lane stays fast (no `<think>` prefix delaying the first answer token)
+    under either provider.
+    """
+    if "openrouter" in base_url.lower():
+        body["reasoning"] = {"enabled": False}
+    else:
+        body["thinking"] = {"type": "disabled"}
+
+
 def _chat_once(
     message: str, *, api_key: str, soul: str, rules: str, think: bool,
     base_url: str, model: str, timeout: float, max_tokens: int, session: Any,
@@ -167,9 +183,10 @@ def _chat_once(
 ) -> Optional[str]:
     """One direct M3 chat call. Returns cleaned content, or None on error/empty.
 
-    `think=False` sends `thinking:{type:disabled}` (the M3 kill-switch); `think=True`
-    omits it so M3 reasons (medium lane). Cache-friendly order: static system FIRST,
-    then prior conversation turns (`history`), then the current user message LAST.
+    `think=False` disables reasoning (the kill-switch — provider-specific param via
+    _apply_reasoning_off); `think=True` omits it so M3 reasons (medium lane).
+    Cache-friendly order: static system FIRST, then prior conversation turns
+    (`history`), then the current user message LAST.
     """
     messages = _build_messages(soul, rules, history, message)
     body = {
@@ -178,7 +195,7 @@ def _chat_once(
         "max_tokens": max_tokens,
     }
     if not think:
-        body["thinking"] = {"type": "disabled"}
+        _apply_reasoning_off(body, base_url)
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = base_url.rstrip("/") + "/chat/completions"
     try:
@@ -459,9 +476,9 @@ def stream_fast_reply(
         "model": model,
         "messages": _build_messages(soul, _ROUTER_RULES, history, message),
         "max_tokens": max_tokens,
-        "thinking": {"type": "disabled"},
         "stream": True,
     }
+    _apply_reasoning_off(body, base_url)  # stage-1 router always runs reasoning OFF
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     url = base_url.rstrip("/") + "/chat/completions"
     start = clk()

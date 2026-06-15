@@ -63,6 +63,32 @@ def test_strips_think_blocks_defensively():
     assert fast_reply("привет", api_key="k", session=s) == "привет"
 
 
+# ---- reasoning-off kill-switch is provider-aware -------------------------
+
+def test_native_minimax_uses_thinking_kill_switch():
+    """Default base_url (api.minimax.io) sends the MiniMax `thinking` kill-switch,
+    NOT OpenRouter's `reasoning` field — the native path is byte-for-byte unchanged."""
+    s = FakeSession(FakeResp(payload=_ok("ok")))
+    fast_reply("привет", api_key="k", soul="voice", session=s)
+    body = s.calls[0]["json"]
+    assert body.get("thinking") == {"type": "disabled"}
+    assert "reasoning" not in body
+
+
+def test_openrouter_uses_reasoning_enabled_false():
+    """When pointed at OpenRouter, the kill-switch becomes `reasoning:{enabled:false}`
+    (OpenRouter rejects/ignores `thinking`) so the swapped M3 still answers fast."""
+    s = FakeSession(FakeResp(payload=_ok("ok")))
+    fast_reply(
+        "привет", api_key="k", soul="voice", session=s,
+        base_url="https://openrouter.ai/api/v1", model="minimax/minimax-m3",
+    )
+    body = s.calls[0]["json"]
+    assert body.get("reasoning") == {"enabled": False}
+    assert "thinking" not in body
+    assert body["model"] == "minimax/minimax-m3"
+
+
 # ---- defer (fall back to hermes) ----------------------------------------
 
 def test_defer_sentinel_returns_none():
