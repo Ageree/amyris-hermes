@@ -62,8 +62,20 @@ class ControllerDeps:
     secrets: SecretManager
     # clock: injectable for tests
     now_fn: Callable[[], float] = field(default_factory=lambda: time.time)
-    # simple in-memory failure counter per userId
+    # simple in-memory failure counter per userId (failed docker RUN)
     failure_counts: dict[str, int] = field(default_factory=dict)
+    # Crash-loop guard (Bug H1): a container that docker-runs fine but DIES before
+    # its first heartbeat would otherwise be relaunched forever (failure_counts
+    # never increments). We count consecutive relaunches that did NOT produce a
+    # heartbeat advance, and after max_launch_failures we markError + STOP
+    # relaunching until desired/wantsAt is re-asserted.
+    crash_counts: dict[str, int] = field(default_factory=dict)
+    # last heartbeatAt observed per user (to detect a healthy advance between ticks)
+    last_heartbeat_seen: dict[str, Optional[float]] = field(default_factory=dict)
+    # users whose crash-loop tripped the guard, mapped to the wantsAt/desired
+    # marker that was current when we blocked them. A change to that marker means
+    # desired was re-asserted -> clear the block and allow a fresh launch.
+    crash_blocked: dict[str, Any] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -118,6 +130,73 @@ def _container_name(user_id: str) -> str:
     return f"hermes-{safe}"
 
 
+def _desired_marker(instance: dict):
+    """A value that CHANGES whenever 'desired' is (re-)asserted for an instance.
+
+    Prefer `wantsAt` (a Convex timestamp bumped on every requestInstance /
+    setDesired) and fall back to `desired` so the guard still works if wantsAt is
+    absent. Used by the crash-loop guard to know when an operator/user has asked
+    for the instance again, which should clear a previous error block.
+    """
+    if instance.get("wantsAt") is not None:
+        return instance.get("wantsAt")
+    return instance.get("desired")
+
+
+def _crash_block_active(instance: dict, deps: ControllerDeps) -> bool:
+    """True if this user is crash-loop-blocked AND desired hasn't been re-asserted.
+
+    Clears (and returns False) the moment the desired marker changes — that's the
+    signal an operator/user re-requested the instance, so we should try again.
+    """
+    user_id = instance.get("userId")
+    if user_id not in deps.crash_blocked:
+        return False
+    if deps.crash_blocked[user_id] != _desired_marker(instance):
+        # Desired re-asserted -> clear the block and the crash counter.
+        deps.crash_blocked.pop(user_id, None)
+        deps.crash_counts.pop(user_id, None)
+        deps.last_heartbeat_seen.pop(user_id, None)
+        return False
+    return True
+
+
+def _record_crash_relaunch(instance: dict, deps: ControllerDeps) -> bool:
+    """Update the crash-relaunch counter for a relaunch about to happen.
+
+    Returns True if the crash-loop threshold is now exceeded and the relaunch must
+    be SUPPRESSED (instance marked error instead). A relaunch is a "crash relaunch"
+    when the heartbeat has NOT advanced since the last time we relaunched this user;
+    a heartbeat advance means the container became healthy, so the counter resets.
+    """
+    user_id = instance["userId"]
+    hb = instance.get("heartbeatAt")
+    prev_hb = deps.last_heartbeat_seen.get(user_id, "__unset__")
+
+    healthy_advance = (
+        hb is not None and prev_hb != "__unset__" and prev_hb is not None and hb > prev_hb
+    )
+    if healthy_advance:
+        deps.crash_counts[user_id] = 0
+    else:
+        deps.crash_counts[user_id] = deps.crash_counts.get(user_id, 0) + 1
+    deps.last_heartbeat_seen[user_id] = hb
+
+    if deps.crash_counts[user_id] >= deps.cfg.max_launch_failures:
+        logger.error(
+            "ALERT: user=%s crash-looped %d relaunches with no healthy heartbeat — "
+            "marking error and suspending relaunch until desired is re-asserted",
+            user_id, deps.crash_counts[user_id],
+        )
+        try:
+            deps.convex.mark_error(user_id, "crash-loop: container died before first heartbeat")
+        except Exception as exc:
+            logger.error("markError failed user=%s: %s", user_id, exc)
+        deps.crash_blocked[user_id] = _desired_marker(instance)
+        return True
+    return False
+
+
 def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref: str) -> dict[str, str]:
     """Build the env dict for docker run.
 
@@ -130,6 +209,15 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
             logger.warning("env var %s is not set — container may misbehave", name)
         return v
 
+    # The names below MUST match EXACTLY what the worker's WorkerConfig.from_env()
+    # bracket-reads, or the container crashes on boot (Bug C1). The worker reads:
+    #   CONVEX_URL, WORKER_SECRET, SENDBLUE_API_KEY_ID, SENDBLUE_API_SECRET_KEY,
+    #   SENDBLUE_FROM_NUMBER  (all required); MINIMAX_BASE_URL is read with a
+    #   default but the funded sk-cp- Token Plan key only works against
+    #   api.minimax.io/v1, so we inject it explicitly (Bug M2).
+    # NOTE: ALLOWED_USER_NUMBER is INTENTIONALLY omitted — a scoped per-tenant
+    #   worker routes each reply to the claimed message's own address (multi-tenant
+    #   keystone); it must never be pinned to the operator's number.
     return {
         "WORKER_MODE": "scoped",
         "USER_ID": user_id,
@@ -139,8 +227,12 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
         "HERMES_HOME": f"/data/tenants/{user_id}",
         "MINIMAX_API_KEY": _get("MINIMAX_API_KEY"),
         "MINIMAX_MODEL": os.environ.get("MINIMAX_MODEL", "MiniMax-M3"),
+        "MINIMAX_BASE_URL": os.environ.get(
+            "MINIMAX_BASE_URL", "https://api.minimax.io/v1"
+        ),
         "SENDBLUE_API_KEY_ID": _get("SENDBLUE_API_KEY_ID"),
-        "SENDBLUE_API_SECRET": _get("SENDBLUE_API_SECRET"),
+        "SENDBLUE_API_SECRET_KEY": _get("SENDBLUE_API_SECRET_KEY"),
+        "SENDBLUE_FROM_NUMBER": _get("SENDBLUE_FROM_NUMBER"),
         "TELEGRAM_BOT_TOKEN": _get("TELEGRAM_BOT_TOKEN"),
         "EXA_API_KEY": _get("EXA_API_KEY"),
         # Secret Manager ref (not the value)
@@ -164,6 +256,17 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
     user_id = instance["userId"]
     instance_id = instance.get("instanceId", user_id)
     cfg = deps.cfg
+
+    # Crash-loop guard (Bug H1): after we markError a crash-looping instance its
+    # status becomes "error", which _decide turns back into "launch". Suppress that
+    # launch until desired/wantsAt is re-asserted, so we don't keep starting doomed
+    # containers every ~3s.
+    if _crash_block_active(instance, deps):
+        logger.warning(
+            "launch suppressed for user=%s — crash-loop blocked (awaiting desired re-assert)",
+            user_id,
+        )
+        return {"action": "launch_suppressed_crashloop", "userId": user_id}
 
     # Placement: we need a real hosts_state; for now build a minimal one
     # from the running container counts on each host (best-effort).
@@ -222,12 +325,46 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
 
 
 def _do_relaunch(instance: dict, deps: ControllerDeps) -> dict:
-    """Handle a stale or dead container — stop then re-launch."""
+    """Handle a stale or dead container — stop then re-launch.
+
+    CRITICAL (relaunch self-kill): the Convex row is still status="running" here,
+    and `claimInstanceForLaunch` returns claimed=false for a "running" row. So we
+    MUST transition the row OFF "running" via `markStopped` BEFORE calling
+    `_do_launch`; otherwise the freshly-started container loses the claim and
+    `_do_launch` immediately `docker stop`s it as a "duplicate" — leaving the
+    instance down and relaunched-then-killed every tick. `markStopped` sets
+    status="stopped" but LEAVES desired="running" intact, so reconcile still wants
+    it and the new claim now succeeds.
+    """
     user_id = instance["userId"]
     name = _container_name(user_id)
 
+    # Crash-loop guard (Bug H1): if this user is already error-blocked (and desired
+    # hasn't been re-asserted), do NOT hammer docker again.
+    if _crash_block_active(instance, deps):
+        logger.warning(
+            "relaunch suppressed for user=%s — crash-loop blocked (awaiting desired re-assert)",
+            user_id,
+        )
+        return {"action": "relaunch_suppressed_crashloop", "userId": user_id}
+
+    # Count this relaunch; if it trips the crash-loop threshold, mark error and
+    # suppress the relaunch instead of starting yet another doomed container.
+    if _record_crash_relaunch(instance, deps):
+        deps.docker.stop(name)  # ensure the dead container is gone; do NOT relaunch
+        return {"action": "relaunch_suppressed_crashloop", "userId": user_id}
+
     logger.info("relaunch user=%s (stale heartbeat or dead container)", user_id)
     deps.docker.stop(name)
+
+    # Release the "running" claim so the relaunch can re-claim the slot. Best-effort:
+    # a markStopped hiccup must not abort the relaunch (the claim may still succeed
+    # if the row was already off "running"); log and continue.
+    try:
+        deps.convex.mark_stopped(user_id)
+    except Exception as exc:
+        logger.error("markStopped before relaunch failed user=%s: %s", user_id, exc)
+
     # Reuse launch path (no GCS mirror on relaunch — state is live on disk)
     return _do_launch(instance, deps)
 

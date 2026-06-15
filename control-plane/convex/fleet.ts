@@ -1,6 +1,7 @@
-import { mutation, internalMutation, query } from "./_generated/server";
+import { mutation, internalMutation, query, type MutationCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { assertWorker, channelValidator } from "./lib/auth";
 
 // ---------------------------------------------------------------------------
@@ -40,7 +41,58 @@ type FleetTier = "free" | "paid";
 // requestInstance — cold-start. Inbound for a user with no warm container flips
 // desired→running (upsert). Idempotent: an already-running/desired-running row is
 // left as-is (only wantsAt is refreshed so the cold-start clock is accurate).
+//
+// Two entry points share requestInstanceImpl: the public `requestInstance`
+// (WORKER_SECRET-gated, for the controller/admin/tests) and the internal
+// `requestInstanceInternal` (called by the inbound webhooks in http.ts right
+// after a tenant row is enqueued — wiring the cold-start edge so an idle/never-
+// launched tenant's message actually triggers a launch instead of sitting in the
+// queue). When the caller doesn't pin a tier, derive it from the user's
+// entitlement (pro/max → "paid" stays warm; free/none → "free" is idle-reaped).
 // ---------------------------------------------------------------------------
+async function deriveTier(
+  ctx: MutationCtx,
+  userId: Id<"users">,
+): Promise<FleetTier> {
+  const ent = await ctx.db
+    .query("entitlements")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  return ent && (ent.tier === "pro" || ent.tier === "max") ? "paid" : "free";
+}
+
+export async function requestInstanceImpl(
+  ctx: MutationCtx,
+  args: { userId: Id<"users">; tier?: FleetTier; channel?: "imessage" | "telegram" },
+): Promise<{ instanceId: Id<"agentInstances">; status: InstanceStatus; created: boolean }> {
+  const { userId, tier, channel } = args;
+  const now = Date.now();
+  const existing = await ctx.db
+    .query("agentInstances")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .first();
+  if (existing) {
+    const patch: Record<string, unknown> = { wantsAt: now };
+    if (existing.desired !== "running") patch.desired = "running";
+    if (channel && existing.channel !== channel) patch.channel = channel;
+    await ctx.db.patch(existing._id, patch);
+    return {
+      instanceId: existing._id,
+      status: existing.status as InstanceStatus,
+      created: false,
+    };
+  }
+  const instanceId = await ctx.db.insert("agentInstances", {
+    userId,
+    channel,
+    desired: "running",
+    status: "provisioning",
+    tier: tier ?? (await deriveTier(ctx, userId)),
+    wantsAt: now,
+  });
+  return { instanceId, status: "provisioning" as InstanceStatus, created: true };
+}
+
 export const requestInstance = mutation({
   args: {
     workerSecret: v.string(),
@@ -55,31 +107,21 @@ export const requestInstance = mutation({
   }),
   handler: async (ctx, { workerSecret, userId, tier, channel }) => {
     assertWorker(workerSecret);
-    const now = Date.now();
-    const existing = await ctx.db
-      .query("agentInstances")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .first();
-    if (existing) {
-      const patch: Record<string, unknown> = { wantsAt: now };
-      if (existing.desired !== "running") patch.desired = "running";
-      if (channel && existing.channel !== channel) patch.channel = channel;
-      await ctx.db.patch(existing._id, patch);
-      return {
-        instanceId: existing._id,
-        status: existing.status as InstanceStatus,
-        created: false,
-      };
-    }
-    const instanceId = await ctx.db.insert("agentInstances", {
-      userId,
-      channel,
-      desired: "running",
-      status: "provisioning",
-      tier: tier ?? "free",
-      wantsAt: now,
-    });
-    return { instanceId, status: "provisioning" as InstanceStatus, created: true };
+    return await requestInstanceImpl(ctx, { userId, tier, channel });
+  },
+});
+
+// Internal cold-start trigger for the inbound webhooks (http.ts). Not client-
+// callable; no WORKER_SECRET (internal functions are unreachable over HTTP).
+export const requestInstanceInternal = internalMutation({
+  args: { userId: v.id("users"), channel: v.optional(channelValidator) },
+  returns: v.object({
+    instanceId: v.id("agentInstances"),
+    status: instanceStatus,
+    created: v.boolean(),
+  }),
+  handler: async (ctx, { userId, channel }) => {
+    return await requestInstanceImpl(ctx, { userId, channel });
   },
 });
 
@@ -263,27 +305,31 @@ export const listReconcile = query({
 // Index-scan by_status_heartbeat(status="running"), JS predicate on lastActiveAt
 // (bounded take, not a table .filter), paginate via self-reschedule.
 // ---------------------------------------------------------------------------
+export async function reapIdleInstancesImpl(
+  ctx: MutationCtx,
+): Promise<{ reaped: number }> {
+  const now = Date.now();
+  const running = await ctx.db
+    .query("agentInstances")
+    .withIndex("by_status_heartbeat", (q) => q.eq("status", "running"))
+    .take(REAP_BATCH);
+  let reaped = 0;
+  for (const inst of running) {
+    if (inst.tier !== "free") continue;        // paid stays warm
+    if (inst.desired !== "running") continue;   // already being torn down
+    const idleSince = inst.lastActiveAt ?? inst.startedAt ?? now;
+    if (now - idleSince < IDLE_TTL_FREE_MS) continue;
+    await ctx.db.patch(inst._id, { desired: "stopped" });
+    reaped++;
+  }
+  if (running.length === REAP_BATCH) {
+    await ctx.scheduler.runAfter(0, internal.fleet.reapIdleInstances, {});
+  }
+  return { reaped };
+}
+
 export const reapIdleInstances = internalMutation({
   args: {},
   returns: v.object({ reaped: v.number() }),
-  handler: async (ctx) => {
-    const now = Date.now();
-    const running = await ctx.db
-      .query("agentInstances")
-      .withIndex("by_status_heartbeat", (q) => q.eq("status", "running"))
-      .take(REAP_BATCH);
-    let reaped = 0;
-    for (const inst of running) {
-      if (inst.tier !== "free") continue;        // paid stays warm
-      if (inst.desired !== "running") continue;   // already being torn down
-      const idleSince = inst.lastActiveAt ?? inst.startedAt ?? now;
-      if (now - idleSince < IDLE_TTL_FREE_MS) continue;
-      await ctx.db.patch(inst._id, { desired: "stopped" });
-      reaped++;
-    }
-    if (running.length === REAP_BATCH) {
-      await ctx.scheduler.runAfter(0, internal.fleet.reapIdleInstances, {});
-    }
-    return { reaped };
-  },
+  handler: async (ctx) => reapIdleInstancesImpl(ctx),
 });

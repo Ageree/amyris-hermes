@@ -39,8 +39,11 @@ def test_cfg(monkeypatch) -> ControllerConfig:
     monkeypatch.setenv("GCP_PROJECT", "test-project")
     monkeypatch.setenv("GCS_BUCKET", "test-bucket")
     monkeypatch.setenv("MINIMAX_API_KEY", "test-mm-key")
+    # EXACT names the worker reads (see controller._build_env / Bug C1).
     monkeypatch.setenv("SENDBLUE_API_KEY_ID", "test-sb-id")
-    monkeypatch.setenv("SENDBLUE_API_SECRET", "test-sb-secret")
+    monkeypatch.setenv("SENDBLUE_API_SECRET_KEY", "test-sb-secret")
+    monkeypatch.setenv("SENDBLUE_FROM_NUMBER", "+15550001111")
+    monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-tg-token")
     monkeypatch.setenv("EXA_API_KEY", "test-exa-key")
     return ControllerConfig.from_env()
@@ -102,16 +105,38 @@ def fake_docker() -> FakeDockerDriver:
 # ---------------------------------------------------------------------------
 
 class FakeConvexAdmin:
+    """Faithful fake of the Convex fleet:* admin surface.
+
+    IMPORTANT (relaunch self-kill bug): the REAL `fleet:claimInstanceForLaunch`
+    returns {claimed:false} whenever the row status is "running" — it refuses to
+    re-claim an already-running instance. This fake now models that guard via a
+    per-user status map, instead of unconditionally returning `claim_returns`.
+    `markStopped` flips status to "stopped" (leaving desired="running"), which is
+    exactly how a relaunch must transition the row OFF "running" so the new
+    container's claim succeeds. Seed initial statuses from the reconcile snapshot.
+    """
+
     def __init__(self, instances: list[dict] | None = None) -> None:
         self._instances = instances or []
         self.claimed_calls: list[dict] = []
         self.mark_stopped_calls: list[str] = []
         self.mark_error_calls: list[dict] = []
         self.set_desired_calls: list[dict] = []
-        # Override to simulate claim race loss
+        # Per-user current status (mirrors the Convex row). Seeded from instances.
+        self._status: dict[str, str] = {
+            i["userId"]: i.get("status", "")
+            for i in self._instances
+            if i.get("userId")
+        }
+        # Override to simulate a claim race loss regardless of status (the OTHER
+        # controller won). When True, claim returns false even for a stopped row.
         self.claim_returns: bool = True
         # Override to simulate errors
         self.claim_should_raise: bool = False
+
+    def set_status(self, user_id: str, status: str) -> None:
+        """Test helper: seed/override a user's current Convex status."""
+        self._status[user_id] = status
 
     def list_reconcile(self) -> list[dict]:
         return list(self._instances)
@@ -123,13 +148,23 @@ class FakeConvexAdmin:
         })
         if self.claim_should_raise:
             raise RuntimeError("fake claim error")
-        return {"claimed": self.claim_returns}
+        # Real guard: an already-"running" row cannot be re-claimed.
+        if self._status.get(user_id) == "running":
+            return {"claimed": False}
+        if not self.claim_returns:
+            return {"claimed": False}
+        # Successful claim transitions the row to running.
+        self._status[user_id] = "running"
+        return {"claimed": True}
 
     def mark_stopped(self, user_id: str):
         self.mark_stopped_calls.append(user_id)
+        # markStopped sets status="stopped" but LEAVES desired="running" intact.
+        self._status[user_id] = "stopped"
 
     def mark_error(self, user_id: str, error: str):
         self.mark_error_calls.append({"userId": user_id, "error": error})
+        self._status[user_id] = "error"
         return {"errorCount": len(self.mark_error_calls)}
 
     def set_desired(self, user_id: str, desired: str):

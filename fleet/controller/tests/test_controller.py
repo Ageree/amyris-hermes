@@ -12,6 +12,7 @@ import pytest
 
 from controller import (
     ControllerDeps,
+    _build_env,
     _decide,
     _do_launch,
     _do_relaunch,
@@ -210,7 +211,11 @@ class TestDoStop:
 # ---------------------------------------------------------------------------
 
 class TestStaleRelaunch:
-    def test_relaunch_stops_then_starts(self, deps, fake_docker):
+    def test_relaunch_stops_then_starts(self, deps, fake_docker, fake_convex):
+        # The row is currently "running" (stale heartbeat). The real
+        # claimInstanceForLaunch refuses to re-claim a "running" row, so relaunch
+        # MUST first transition it off "running" via markStopped.
+        fake_convex.set_status("u3", "running")
         inst = {
             "userId": "u3",
             "instanceId": "inst3",
@@ -221,8 +226,129 @@ class TestStaleRelaunch:
             "errorCount": 0,
         }
         result = _do_relaunch(inst, deps)
-        assert len(fake_docker.stopped) >= 1
+        # Old container stopped, new container started.
         assert len(fake_docker.ran) == 1
+        # The relaunch must NOT self-kill the brand-new container: its claim
+        # succeeds (because markStopped flipped the row off "running").
+        assert result["action"] == "launched", result
+        # Exactly ONE docker stop — the OLD container. In the buggy path there were
+        # TWO (relaunch's stop of old + _do_launch's duplicate-stop of the brand-new
+        # container, since the name is stable per user and they can't be told apart
+        # by name). One stop proves the new container was NOT self-killed.
+        assert len(fake_docker.stopped) == 1, fake_docker.stopped
+        # markStopped was called to release the "running" claim before relaunch.
+        assert "u3" in fake_convex.mark_stopped_calls
+        # And the claim actually succeeded (single attempt, claimed:true).
+        assert len(fake_convex.claimed_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Bug H1 — crash-loop guard. A container that docker-runs fine but DIES before
+# its first heartbeat must NOT be relaunched forever. After max_launch_failures
+# crash-relaunches (no heartbeat advance), the controller marks error and stops
+# hammering docker until desired/wantsAt is re-asserted.
+# ---------------------------------------------------------------------------
+
+class TestCrashLoopGuard:
+    def _crashed_inst(self, **overrides) -> dict:
+        """A row the reconcile sees as 'relaunch': desired=running, status=running,
+        a live containerId, but a stale/missing heartbeat (the container died)."""
+        base = {
+            "userId": "u_crash",
+            "instanceId": "inst_crash",
+            "desired": "running",
+            "status": "running",
+            "containerId": "deadcid",
+            "heartbeatAt": None,   # never heartbeat -> crash before first ping
+            "wantsAt": 1000,
+            "errorCount": 0,
+        }
+        base.update(overrides)
+        return base
+
+    def test_crash_relaunch_stops_after_max_and_marks_error(self, deps, fake_docker, fake_convex):
+        n = deps.cfg.max_launch_failures
+        # The row stays "running" with a never-advancing heartbeat across ticks.
+        fake_convex.set_status("u_crash", "running")
+
+        for _ in range(n + 3):  # try MORE ticks than the threshold
+            inst = self._crashed_inst()
+            action = _decide(inst, deps)
+            if action == "relaunch":
+                _do_relaunch(inst, deps)
+                # markStopped flips fake status to "stopped"; mimic the dead
+                # container by re-asserting "running" with a stale heartbeat for
+                # the NEXT tick (the relaunched container also died).
+                fake_convex.set_status("u_crash", "running")
+
+        # The number of ACTUAL docker runs is bounded by the crash-loop threshold —
+        # the guard suppresses further relaunches once it trips.
+        assert len(fake_docker.ran) <= n, (
+            f"kept relaunching ({len(fake_docker.ran)}) past the crash-loop threshold {n}"
+        )
+        # It marked the instance errored.
+        assert any(c["userId"] == "u_crash" for c in fake_convex.mark_error_calls), (
+            "never called mark_error on a crash-looping instance"
+        )
+
+    def test_crash_loop_issues_no_further_docker_run_after_block(self, deps, fake_docker, fake_convex):
+        n = deps.cfg.max_launch_failures
+        fake_convex.set_status("u_crash", "running")
+
+        # Drive enough ticks to trip the guard.
+        for _ in range(n + 2):
+            inst = self._crashed_inst()
+            if _decide(inst, deps) == "relaunch":
+                _do_relaunch(inst, deps)
+                fake_convex.set_status("u_crash", "running")
+
+        runs_at_block = len(fake_docker.ran)
+
+        # Further ticks while desired/wantsAt is UNCHANGED must NOT docker run.
+        for _ in range(3):
+            inst = self._crashed_inst()
+            if _decide(inst, deps) == "relaunch":
+                _do_relaunch(inst, deps)
+
+        assert len(fake_docker.ran) == runs_at_block, (
+            "controller kept issuing docker run after the crash-loop block"
+        )
+
+    def test_healthy_heartbeat_advance_resets_counter_no_error(self, deps, fake_docker, fake_convex):
+        """A container that recovers (heartbeat ADVANCES between relaunches) is a
+        legitimate stale-relaunch, NOT a crash loop — the counter resets and we
+        never mark_error, even across many ticks."""
+        fake_convex.set_status("u_ok", "running")
+        hb = 1000
+        for _ in range(deps.cfg.max_launch_failures + 4):
+            # Each relaunch sees a FRESHER heartbeat than the previous tick.
+            hb += 100
+            inst = self._crashed_inst(userId="u_ok", heartbeatAt=hb)
+            if _decide(inst, deps) == "relaunch":
+                _do_relaunch(inst, deps)
+                fake_convex.set_status("u_ok", "running")
+        assert not any(c["userId"] == "u_ok" for c in fake_convex.mark_error_calls), (
+            "marked error on a healthily-advancing instance (false positive)"
+        )
+
+    def test_crash_loop_block_clears_when_desired_reasserted(self, deps, fake_docker, fake_convex):
+        n = deps.cfg.max_launch_failures
+        fake_convex.set_status("u_crash", "running")
+        for _ in range(n + 2):
+            inst = self._crashed_inst()
+            if _decide(inst, deps) == "relaunch":
+                _do_relaunch(inst, deps)
+                fake_convex.set_status("u_crash", "running")
+        runs_at_block = len(fake_docker.ran)
+
+        # Operator/user re-asserts desired (wantsAt advances) -> the guard clears
+        # and a launch is attempted again.
+        fake_convex.set_status("u_crash", "stopped")
+        reasserted = self._crashed_inst(wantsAt=999999, status="stopped", containerId=None)
+        action = _decide(reasserted, deps)
+        assert action == "launch"
+        _do_launch(reasserted, deps)
+        assert len(fake_docker.ran) == runs_at_block + 1
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +368,27 @@ class TestReconcileOnce:
         }]
         actions = reconcile_once(deps)
         assert any(a["action"] == "launched" for a in actions)
+
+    def test_reconcile_launches_freshly_requested_provisioning_instance(
+        self, deps, fake_convex, fake_docker
+    ):
+        """Bug C2: a freshly requested instance (desired=running, status=provisioning,
+        no containerId, no heartbeatAt) MUST be cold-started — docker run +
+        claimInstanceForLaunch — by a single reconcile pass."""
+        fake_convex._instances = [{
+            "userId": "u_fresh",
+            "instanceId": "inst_fresh",
+            "desired": "running",
+            "status": "provisioning",
+            "containerId": None,
+            "heartbeatAt": None,
+            "errorCount": 0,
+        }]
+        actions = reconcile_once(deps)
+        assert any(a["action"] == "launched" for a in actions), actions
+        assert len(fake_docker.ran) == 1
+        assert len(fake_convex.claimed_calls) == 1
+        assert fake_convex.claimed_calls[0]["userId"] == "u_fresh"
 
     def test_reconcile_processes_stop_instance(self, deps, fake_convex, fake_docker):
         fake_convex._instances = [{
@@ -358,3 +505,84 @@ class _StopLoop(BaseException):
     Must be BaseException (not Exception) so it escapes the
     `except Exception` handler inside run() and propagates up.
     """
+
+
+# ---------------------------------------------------------------------------
+# Bug C1/M2 — env contract: _build_env must produce EXACTLY the names the
+# worker's WorkerConfig.from_env() bracket-reads, so a launched container boots.
+# This is the regression test that would have caught the
+# SENDBLUE_API_SECRET vs SENDBLUE_API_SECRET_KEY mismatch and the missing
+# SENDBLUE_FROM_NUMBER / MINIMAX_BASE_URL.
+# ---------------------------------------------------------------------------
+
+class TestBuildEnvBootsWorker:
+    def _set_controller_env(self, monkeypatch) -> None:
+        """Set the SECRET-source vars the controller reads from its OWN env."""
+        monkeypatch.setenv("WORKER_SECRET", "ws-from-controller")
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        monkeypatch.setenv("MINIMAX_MODEL", "MiniMax-M3")
+        monkeypatch.setenv("MINIMAX_BASE_URL", "https://api.minimax.io/v1")
+        monkeypatch.setenv("SENDBLUE_API_KEY_ID", "sb-id")
+        monkeypatch.setenv("SENDBLUE_API_SECRET_KEY", "sb-secret")
+        monkeypatch.setenv("SENDBLUE_FROM_NUMBER", "+16466208124")
+        monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg-token")
+        monkeypatch.setenv("EXA_API_KEY", "exa-key")
+
+    def test_build_env_includes_exact_sendblue_secret_key_name(self, test_cfg, monkeypatch):
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        # The worker reads SENDBLUE_API_SECRET_KEY (NOT SENDBLUE_API_SECRET).
+        assert env["SENDBLUE_API_SECRET_KEY"] == "sb-secret"
+        assert "SENDBLUE_API_SECRET" not in env or "SENDBLUE_API_SECRET_KEY" in env
+
+    def test_build_env_includes_sendblue_from_number(self, test_cfg, monkeypatch):
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        assert env["SENDBLUE_FROM_NUMBER"] == "+16466208124"
+
+    def test_build_env_includes_minimax_base_url(self, test_cfg, monkeypatch):
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        assert env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
+
+    def test_built_env_constructs_worker_config_with_no_keyerror(self, test_cfg, monkeypatch):
+        """The smoking gun: feed _build_env's output to the REAL worker config
+        builder. If any required name is missing/misnamed, from_env raises KeyError
+        and the container would crash on boot."""
+        import importlib.util
+        import os as _os
+
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+
+        # Load the worker module by file path (it lives in lab/skeleton, a sibling
+        # tree). Its WorkerConfig.from_env() is the exact boot-time contract.
+        worker_path = _os.path.abspath(
+            _os.path.join(
+                _os.path.dirname(__file__), "..", "..", "..",
+                "lab", "skeleton", "worker.py",
+            )
+        )
+        mod_name = "_worker_for_envtest"
+        spec = importlib.util.spec_from_file_location(mod_name, worker_path)
+        worker_mod = importlib.util.module_from_spec(spec)
+        # worker.py imports siblings (convex_client, hermes_bridge, channels) —
+        # ensure lab/skeleton is importable before exec.
+        import sys as _sys
+        _sys.path.insert(0, _os.path.dirname(worker_path))
+        # Register in sys.modules BEFORE exec so dataclass() can resolve the
+        # module's annotations (frozen WorkerConfig) via cls.__module__.
+        _sys.modules[mod_name] = worker_mod
+        spec.loader.exec_module(worker_mod)
+
+        # Replace os.environ with EXACTLY the launched container's env so any
+        # bracket-access on a missing name raises KeyError.
+        monkeypatch.setattr(_os, "environ", dict(env))
+        cfg = worker_mod.WorkerConfig.from_env()  # MUST NOT raise KeyError
+
+        # Spot-check the values flowed through correctly.
+        assert cfg.worker_secret == "ws-from-controller"
+        assert cfg.sendblue_secret == "sb-secret"
+        assert cfg.sendblue_from == "+16466208124"
+        assert cfg.minimax_base_url == "https://api.minimax.io/v1"
+        assert cfg.scoped_user_id == "u1"

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import logging
 import os
+import signal
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
@@ -85,6 +87,54 @@ except Exception:  # composio optional — worker still runs the queue without i
     ComposioClient = None
 
 log = logging.getLogger("worker")
+
+# --- Graceful shutdown (Bug H3) -------------------------------------------------
+# On `docker stop` (idle-reap / relaunch) the container gets SIGTERM, then SIGKILL
+# after a grace period. Without a handler the worker ignores SIGTERM and is killed
+# mid-turn, losing the in-flight reply. We install a SIGTERM/SIGINT handler that
+# sets this Event; run_loop finishes the CURRENT process_one, stops claiming new
+# work, and exits 0. A heartbeat desired="stopped" sets the SAME flag (proactive
+# drain). Everything here is FAIL-SOFT: signal handling must never crash the loop.
+_STOP = threading.Event()
+
+
+def request_stop() -> None:
+    """Signal the worker loop to drain and exit after the current turn."""
+    _STOP.set()
+
+
+def clear_stop() -> None:
+    """Reset the stop flag (tests / a fresh start)."""
+    _STOP.clear()
+
+
+def should_stop() -> bool:
+    """True once a shutdown has been requested (signal or desired=stopped)."""
+    return _STOP.is_set()
+
+
+def _handle_stop_signal(signum, frame) -> None:  # noqa: ARG001 - signal API shape
+    """SIGTERM/SIGINT handler: request a graceful drain. Never raises."""
+    try:
+        log.info("received signal %s — beginning graceful drain", signum)
+    except Exception:  # logging must never turn a signal into a crash
+        pass
+    _STOP.set()
+
+
+def _install_signal_handlers() -> None:
+    """Install SIGTERM + SIGINT handlers. FAIL-SOFT.
+
+    signal.signal only works on the main thread of the main interpreter; if it
+    raises (e.g. embedded / off-main-thread), we log and continue — the loop still
+    honors `should_stop()` for the desired=stopped path, just not OS signals.
+    """
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(sig, _handle_stop_signal)
+        except Exception:  # pragma: no cover - platform/threading dependent
+            log.warning("could not install handler for signal %s (non-fatal)", sig, exc_info=True)
+
 
 MAX_REPLY_CHARS = 1800
 # Never leak Hermes/subprocess internals to the end user.
@@ -225,7 +275,14 @@ class WorkerConfig:
             sendblue_key_id=os.environ["SENDBLUE_API_KEY_ID"],
             sendblue_secret=os.environ["SENDBLUE_API_SECRET_KEY"],
             sendblue_from=os.environ["SENDBLUE_FROM_NUMBER"],
-            reply_target=os.environ["ALLOWED_USER_NUMBER"],
+            # reply_target is the LEGACY fallback (operator/pre-migration rows only).
+            # A SCOPED fleet container is per-tenant and is NEVER pinned to an
+            # operator number — the controller intentionally omits ALLOWED_USER_NUMBER
+            # (multi-tenant keystone). So it is OPTIONAL here: per-message routing
+            # supplies the real reply address, and a tenant row with no address is
+            # already failed safely in process_one. The legacy/operator worker still
+            # sets it via its own .env.
+            reply_target=os.environ.get("ALLOWED_USER_NUMBER", ""),
             hermes_home=os.path.expanduser(
                 os.environ.get("HERMES_HOME", "~/.hermes-savedlab")
             ),
@@ -894,6 +951,13 @@ def run_loop(
     empties = 0
     last_intent: Optional[float] = None
     while max_iterations is None or i < max_iterations:
+        # Graceful shutdown (Bug H3): stop CLAIMING new work the moment a drain was
+        # requested (SIGTERM/SIGINT or desired=stopped). Any in-flight process_one
+        # has already returned by the time we re-check here, so the current turn
+        # always finishes; we just don't start another.
+        if should_stop():
+            log.info("stop requested — draining complete, exiting loop cleanly")
+            return
         i += 1
         try:
             if intent_fn is not None:
@@ -903,16 +967,20 @@ def run_loop(
                     last_intent = now
             # Fleet heartbeat (M6): once per poll iteration in scoped mode.
             # FAIL-SOFT: a control-plane outage must never kill the loop.
-            # If desired="stopped" is returned, log it (graceful-drain TODO) but
-            # continue — mid-loop hard-exit is unsafe; the controller will stop
-            # scheduling new containers instead.
+            # desired="stopped" => the controller wants this container down: begin
+            # a GRACEFUL drain (set the stop flag) instead of claiming more work.
+            # We do NOT hard-exit mid-iteration — any in-flight turn already
+            # finished, and the loop-top check exits before the next claim.
             _hb = _maybe_heartbeat(convex, cfg)
             if _hb == "stopped":
                 log.warning(
                     "fleet:heartbeat desired=stopped for %s — controller requested "
-                    "shutdown; continuing until natural drain (TODO: graceful stop)",
+                    "shutdown; draining and exiting after this iteration",
                     cfg.scoped_user_id,
                 )
+                request_stop()
+                # Skip claiming new work this iteration; exit on the next loop-top check.
+                continue
             did = process_fn(convex, registry, cfg)
         except Exception:
             log.exception("worker iteration crashed")
@@ -930,6 +998,9 @@ def main() -> None:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     cfg = WorkerConfig.from_env()
+    # Graceful shutdown (Bug H3): catch docker stop's SIGTERM (and Ctrl-C) so an
+    # in-flight turn finishes instead of being SIGKILLed. Fail-soft.
+    _install_signal_handlers()
     if cfg.fast_lane_enabled and cfg.minimax_api_key and not _fast_lane_model_ok(cfg):
         log.warning(
             "fast lane model %r does not honor thinking-disabled (only MiniMax-M3 "

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { assertWorker, channelValidator, tierValidator } from "./lib/auth";
 import { PERIOD_MS } from "./billing/tiers";
 import { enqueueImpl } from "./messages";
+import { reapIdleInstancesImpl } from "./fleet";
 import {
   issuePairingTokenImpl,
   redeemTelegramImpl,
@@ -202,6 +203,39 @@ export const testSetEntitlement = mutation({
   },
 });
 
+// ---------------------------------------------------------------------------
+// Fleet test seams (M6 fleet.ts, convex_e2e tier — test_e2e_fleet_lifecycle.py).
+// Double-gated. testReapIdle drives the REAL idle-reaper logic (reapIdleInstancesImpl)
+// over HTTP so the cron's idle-detection is proven against the live
+// by_status_heartbeat index; testBackdateInstance ages a throwaway instance's
+// lastActiveAt past the idle TTL without a real 30-min wait.
+// ---------------------------------------------------------------------------
+export const testReapIdle = mutation({
+  args: { workerSecret: v.string() },
+  returns: v.object({ reaped: v.number() }),
+  handler: async (ctx, { workerSecret }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    return await reapIdleInstancesImpl(ctx);
+  },
+});
+
+export const testBackdateInstance = mutation({
+  args: { workerSecret: v.string(), userId: v.id("users"), lastActiveAt: v.number() },
+  returns: v.object({ ok: v.boolean() }),
+  handler: async (ctx, { workerSecret, userId, lastActiveAt }) => {
+    assertWorker(workerSecret);
+    assertTestMode();
+    const inst = await ctx.db
+      .query("agentInstances")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .first();
+    if (!inst) return { ok: false };
+    await ctx.db.patch(inst._id, { lastActiveAt, startedAt: lastActiveAt });
+    return { ok: true };
+  },
+});
+
 // Delete two throwaway tenants and all their messages (index-scoped, bounded).
 export const cleanupTenants = mutation({
   args: { workerSecret: v.string(), userA: v.id("users"), userB: v.id("users") },
@@ -246,6 +280,12 @@ export const cleanupTenants = mutation({
         .withIndex("by_user_at", (q) => q.eq("userId", uid))
         .collect();
       for (const ev of usage) await ctx.db.delete(ev._id);
+      // agentInstances row a fleet lifecycle test created (one per user).
+      const inst = await ctx.db
+        .query("agentInstances")
+        .withIndex("by_user", (q) => q.eq("userId", uid))
+        .first();
+      if (inst) await ctx.db.delete(inst._id);
       await ctx.db.delete(uid);
     }
     return null;

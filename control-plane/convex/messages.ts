@@ -189,11 +189,13 @@ export const claimNextForUser = mutation({
 // STALE_PROCESSING_MS back to "queued" so a healthy worker re-drains them. Index
 // scan by_status(status="processing"), JS predicate on claimedAt (bounded take,
 // not a table .filter), paginate via self-reschedule. At-most-once delivery still
-// holds: the original worker's eventual complete/fail no-ops a re-queued row only
-// if it races, which idempotency on (channel,handle) and the done/error terminal
-// states absorb.
+// holds: complete/fail guard on status==="processing" (below), so a zombie worker
+// that revives after its row was re-queued + re-claimed can no longer overwrite
+// the fresh result. The window is set well above the worker's worst-case turn
+// (hermes_timeout ~180s) so the reaper never fires mid-healthy-turn — it only
+// recovers genuinely crashed/partitioned workers.
 // ---------------------------------------------------------------------------
-const STALE_PROCESSING_MS = 5 * 60_000;
+const STALE_PROCESSING_MS = 15 * 60_000;
 const REAP_BATCH = 500;
 
 export const reapStaleProcessing = internalMutation({
@@ -221,11 +223,18 @@ export const reapStaleProcessing = internalMutation({
 
 // complete / fail — UNCHANGED signatures (live brain contract). Only a returns
 // validator is added (it returns nothing; v.null() encodes "no return value").
+// Stale-claim guard (A3): both finalize ONLY a row still in "processing". If the
+// reaper re-queued this row (>STALE_PROCESSING_MS) and another worker re-claimed
+// and replied, a late complete/fail from the original (zombie) worker must NOT
+// overwrite the fresh terminal state — that would be a double-finalize. A row
+// that is already done/error/queued is left untouched.
 export const complete = mutation({
   args: { workerSecret: v.string(), id: v.id("messages"), reply: v.string() },
   returns: v.null(),
   handler: async (ctx, { workerSecret, id, reply }) => {
     assertWorker(workerSecret);
+    const m = await ctx.db.get(id);
+    if (!m || m.status !== "processing") return null;
     await ctx.db.patch(id, { status: "done", reply, completedAt: Date.now() });
     return null;
   },
@@ -236,6 +245,8 @@ export const fail = mutation({
   returns: v.null(),
   handler: async (ctx, { workerSecret, id, error }) => {
     assertWorker(workerSecret);
+    const m = await ctx.db.get(id);
+    if (!m || m.status !== "processing") return null;
     await ctx.db.patch(id, { status: "error", error, completedAt: Date.now() });
     return null;
   },

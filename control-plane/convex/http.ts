@@ -69,9 +69,10 @@ http.route({
       return jsonOk({ ok: true });
     }
 
-    // Operator (user #0) stays on the LEGACY enqueue path (userId undefined) so his
-    // running claimNext worker keeps draining — the container cutover to
-    // claimNextForUser is M6 (design §10 step 8). Do NOT tag his rows here, or the
+    // Operator (user #0) stays on the LEGACY enqueue path (userId undefined) while
+    // his launchd worker still polls the global claimNext — the container cutover to
+    // claimNextForUser is operator-gated (design §10 step 8; see the M7-tighten
+    // DEFERRED plan). Until that cutover completes, do NOT tag his rows here, or the
     // legacy worker (which claims only userId===undefined) would go dark.
     const allowed = process.env.ALLOWED_USER_NUMBER ?? "";
     if (allowed && userNumber === allowed) {
@@ -102,6 +103,18 @@ http.route({
       text,
       mediaUrl,
     });
+    // Cold-start: ensure this tenant's container is desired-running so an idle /
+    // never-launched instance gets relaunched by the controller (best-effort —
+    // the message is already durable, so a transient failure here is recovered by
+    // the next inbound or a warm worker; never 5xx the webhook over it).
+    try {
+      await ctx.runMutation(internal.fleet.requestInstanceInternal, {
+        userId: resolved.userId,
+        channel: "imessage",
+      });
+    } catch {
+      // swallow — durable enqueue already succeeded
+    }
     return jsonOk({ ok: true });
   }),
 });
@@ -180,6 +193,15 @@ http.route({
       userNumber,
       text,
     });
+    // Cold-start (see Sendblue branch): flip this tenant's container desired-running.
+    try {
+      await ctx.runMutation(internal.fleet.requestInstanceInternal, {
+        userId: resolved.userId,
+        channel: "telegram",
+      });
+    } catch {
+      // swallow — durable enqueue already succeeded
+    }
     return jsonOk({ ok: true });
   }),
 });

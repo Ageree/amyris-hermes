@@ -61,12 +61,15 @@ export async function issuePairingTokenImpl(
 ): Promise<{ token: string; code: string; expiresAt: number; channel: "imessage" | "telegram" }> {
   const now = Date.now();
 
-  // Supersede any still-active token for this (user,channel) — only one live at
-  // a time (index-scoped read, not a table scan).
+  // Supersede any still-active token for this (user,channel) — only one live at a
+  // time (index-scoped read, not a table scan). Bounded take(): steady state is
+  // 1–2 rows, but consumed/expired/superseded rows accumulate per (user,channel),
+  // so cap the read instead of an unbounded .collect() (the expireStaleTokens cron
+  // keeps the tail trimmed). 200 dead rows for one user/channel is already absurd.
   const prior = await ctx.db
     .query("pairingTokens")
     .withIndex("by_user_channel", (q) => q.eq("userId", userId).eq("channel", channel))
-    .collect();
+    .take(200);
   for (const p of prior) {
     if (p.status === "active") await ctx.db.patch(p._id, { status: "superseded" });
   }
