@@ -15,12 +15,24 @@ if [ -f "$ENV_FILE" ]; then set -a; . "$ENV_FILE"; set +a; fi
 : "${CONVEX_URL:?need CONVEX_URL}"
 : "${WEBHOOK_SECRET:?need WEBHOOK_SECRET}"
 : "${ALLOWED_USER_NUMBER:?need ALLOWED_USER_NUMBER}"
+: "${WORKER_SECRET:?need WORKER_SECRET}"   # messages:stats is worker-gated
 SITE="${CONVEX_SITE:-${CONVEX_URL/.convex.cloud/.convex.site}}"
 
 done_count() {
+  # messages:stats requires the workerSecret (hardened); read .value.done, and
+  # surface a parse/auth failure as a clear error instead of a python traceback.
+  # Flake-tolerant: the .convex.cloud TLS endpoint can intermittently drop the
+  # connection (SSLEOFError) -> empty body. On any empty/error response emit
+  # NOTHING (the poll loop reads that as "no change yet" and retries) instead of
+  # crashing with a JSON traceback. done is a float (v.number) -> cast to int.
   curl -s -X POST "$CONVEX_URL/api/query" -H 'content-type: application/json' \
-    -d '{"path":"messages:stats","args":{},"format":"json"}' \
-    | python3 -c 'import sys,json; print(json.load(sys.stdin).get("value",{}).get("done",0))'
+    -d "{\"path\":\"messages:stats\",\"args\":{\"workerSecret\":\"$WORKER_SECRET\"},\"format\":\"json\"}" \
+    | python3 -c 'import sys,json
+raw=sys.stdin.read().strip()
+if not raw: sys.exit(0)
+try: d=json.loads(raw)
+except Exception: sys.exit(0)
+if d.get("status")=="success": print(int(d.get("value",{}).get("done",0)))' 2>/dev/null
 }
 
 NONCE="$(date +%s)-$$"

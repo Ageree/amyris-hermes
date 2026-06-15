@@ -1023,8 +1023,9 @@ def main() -> None:
             "MINIMAX_MODEL=MiniMax-M3 or FAST_LANE_ENABLED=0.", cfg.minimax_model,
         )
     log.info(
-        "worker starting: polling %s (active %ss / idle %ss), fast_lane=%s",
+        "worker starting: polling %s (active %ss / idle %ss), mode=%s, model=%s, fast_lane=%s",
         cfg.convex_url, cfg.poll_interval, cfg.idle_poll_interval,
+        cfg.worker_mode, cfg.minimax_model,
         cfg.fast_lane_enabled and bool(cfg.minimax_api_key) and fast_reply is not None,
     )
     run_loop(cfg)
