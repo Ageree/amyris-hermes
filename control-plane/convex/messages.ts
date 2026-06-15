@@ -183,6 +183,46 @@ export const claimNextForUser = mutation({
 });
 
 // ---------------------------------------------------------------------------
+// claimNextAny — NEW (shared "bridge" worker). ONE always-on worker claims the
+// oldest queued row across ALL tenants via the by_status index — NO userId filter.
+// Used by WORKER_MODE=shared: a single process serving every tenant, the launch
+// execution model before the per-user GCP fleet. Tenant correctness is preserved
+// DOWNSTREAM, not here: the claimed row carries its OWN userId/channel/replyTarget,
+// so per-message routing (A2) and per-userId history (A1) stay scoped row-by-row.
+// A shared claimer cannot cross a reply — it only widens WHICH queued row this
+// worker may pick up. Same assertWorker gate + atomic patch-to-"processing"
+// (at-most-once: a second concurrent claim cannot re-return a now-"processing"
+// row) + claimReturns shape as claimNextForUser, minus the per-tenant
+// agentInstances bump (a shared worker is not a per-user warm instance). claimNext
+// and claimNextForUser are UNTOUCHED — this is purely additive and reverts by
+// unsetting WORKER_MODE=shared (the worker falls back to scoped/legacy).
+// ---------------------------------------------------------------------------
+export const claimNextAny = mutation({
+  args: { workerSecret: v.string() },
+  returns: claimReturns,
+  handler: async (ctx, { workerSecret }) => {
+    assertWorker(workerSecret);
+    const next = await ctx.db
+      .query("messages")
+      .withIndex("by_status", (q) => q.eq("status", "queued"))
+      .order("asc")
+      .first();
+    if (!next) return null;
+    await ctx.db.patch(next._id, { status: "processing", claimedAt: Date.now() });
+    return {
+      id: next._id,
+      handle: next.handle,
+      userId: next.userId ?? null,
+      channel: next.channel ?? null,
+      replyTarget: next.replyTarget ?? next.userNumber,
+      userNumber: next.userNumber,
+      text: next.text,
+      mediaUrl: next.mediaUrl ?? null,
+    };
+  },
+});
+
+// ---------------------------------------------------------------------------
 // reapStaleProcessing (cron, internal) — a worker that crashed AFTER claiming but
 // BEFORE complete/fail leaves a row stuck in "processing" forever (claimNextForUser
 // only ever claims "queued"). This resets rows whose claimedAt is older than

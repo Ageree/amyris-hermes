@@ -68,7 +68,7 @@ class FakeConvex:
 
     def mutation(self, path: str, args: dict):
         self.calls.append((path, args))
-        if path in ("messages:claimNext", "messages:claimNextForUser"):
+        if path in ("messages:claimNext", "messages:claimNextForUser", "messages:claimNextAny"):
             return self._claim
         return None
 
@@ -175,3 +175,67 @@ def test_scoped_worker_empty_queue_returns_false():
 
     assert did is False
     run_fn.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# 5. Shared "bridge" worker uses claimNextAny across all tenants
+# ---------------------------------------------------------------------------
+
+def test_shared_worker_uses_claim_next_any():
+    """WORKER_MODE=shared claims via claimNextAny (no userId) — never the scoped or
+    legacy claim — so ONE worker drains every tenant's queue."""
+    convex = FakeConvex(claim=_claim(userId="u_bob", replyTarget="+1Bob"))
+    client = MagicMock()
+    run_fn = MagicMock(return_value="bridged reply")
+
+    did = process_one(
+        convex, client,
+        _cfg(worker_mode="shared"),
+        run_fn=run_fn,
+    )
+
+    assert did is True
+    names = convex.names()
+    assert "messages:claimNextAny" in names, "expected claimNextAny in shared mode"
+    assert "messages:claimNext" not in names, "global legacy claim must NOT be used in shared mode"
+    assert "messages:claimNextForUser" not in names, "scoped claim must NOT be used in shared mode"
+
+    sent = convex.args_for("messages:claimNextAny")
+    assert sent == {"workerSecret": "ws"}, "shared claim takes ONLY workerSecret (no userId)"
+
+
+def test_shared_mode_overrides_stray_scoped_user_id():
+    """shared is checked first, so an accidental USER_ID does not silently route to
+    the per-tenant claim — explicit WORKER_MODE=shared wins."""
+    convex = FakeConvex(claim=_claim())
+    client = MagicMock()
+    run_fn = MagicMock(return_value="ok")
+
+    process_one(
+        convex, client,
+        _cfg(worker_mode="shared", scoped_user_id="u_alice"),
+        run_fn=run_fn,
+    )
+
+    names = convex.names()
+    assert "messages:claimNextAny" in names
+    assert "messages:claimNextForUser" not in names
+
+
+def test_shared_worker_reply_goes_to_claim_reply_target():
+    """A shared worker still routes each reply to the CLAIMED row's own replyTarget
+    (per-message A2), so cross-tenant claiming never crosses a reply."""
+    convex = FakeConvex(claim=_claim(userId="u_carol", replyTarget="+1Carol"))
+    client = MagicMock()
+    run_fn = MagicMock(return_value="carol reply")
+
+    process_one(
+        convex, client,
+        _cfg(worker_mode="shared"),
+        run_fn=run_fn,
+    )
+
+    assert client.send_message.called
+    call_args = client.send_message.call_args
+    target = call_args[0][0] if call_args[0] else call_args[1].get("address") or call_args[1].get("to_number")
+    assert target == "+1Carol", f"reply went to {target!r} instead of +1Carol"

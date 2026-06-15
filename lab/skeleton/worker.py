@@ -333,8 +333,17 @@ class WorkerConfig:
 
 
 def _fast_lane_model_ok(cfg: WorkerConfig) -> bool:
-    """True if the configured model honors thinking-disabled (only the M3 family)."""
-    return cfg.minimax_model.startswith("MiniMax-M3")
+    """True if the configured model is the M3 family (the only one that honors
+    reasoning-off, so the fast lane stays fast).
+
+    Accepts BOTH the native MiniMax id ("MiniMax-M3") and the OpenRouter slug
+    ("minimax/minimax-m3") — the assistant runs M3 via either provider. The match
+    is on the normalized "minimax-m3" stem so an M2.x model (which silently keeps
+    reasoning on) is still rejected under either naming.
+    """
+    # Drop any provider prefix ("minimax/…") to compare the bare model name.
+    stem = cfg.minimax_model.lower().rsplit("/", 1)[-1]
+    return stem.startswith("minimax-m3")
 
 
 def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]) -> bool:
@@ -692,10 +701,16 @@ def process_one(
          address (A2: per-message routing), never a global config constant.
     """
     registry = _as_registry(channels, cfg)
-    # Fleet scoping: a per-tenant container claims only its own rows; otherwise the
-    # legacy/operator global claim. Either way the row carries its own channel +
-    # replyTarget so routing is identical.
-    if cfg.scoped_user_id:
+    # Claim-path selection. Three modes, all routing-identical because the claimed
+    # row carries its OWN channel + replyTarget + userId:
+    #   shared  -> claimNextAny      (ONE worker drains EVERY tenant; launch bridge)
+    #   scoped  -> claimNextForUser  (a per-tenant container, USER_ID pinned; fleet)
+    #   legacy  -> claimNext         (operator/un-backfilled userId-less rows)
+    # "shared" is checked first so it overrides the scoped/legacy default even if a
+    # stray USER_ID is present; it is enabled only by an explicit WORKER_MODE=shared.
+    if cfg.worker_mode == "shared":
+        claimed = convex.mutation("messages:claimNextAny", {"workerSecret": cfg.worker_secret})
+    elif cfg.scoped_user_id:
         claimed = convex.mutation(
             "messages:claimNextForUser",
             {"workerSecret": cfg.worker_secret, "userId": cfg.scoped_user_id},
