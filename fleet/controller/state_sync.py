@@ -24,20 +24,16 @@ logger = logging.getLogger(__name__)
 
 RunCmd = Callable[..., subprocess.CompletedProcess]
 
-# Files excluded from rsync to prevent lock/WAL corruption
-_EXCLUDE_PATTERNS = [
-    "*.lock",
-    "SingletonLock",
-    "*-journal",
-    "*-wal",
-]
+# `gcloud storage rsync --exclude` takes a PYTHON REGEX, not a glob — a glob like
+# "*.lock" is an invalid regex ("nothing to repeat at position 0") and crashes the
+# whole rsync (caught live: every mirror/rehydrate failed). One combined regex,
+# matched on the path tail, drops live lock / SQLite WAL+journal / Chrome singleton
+# files so a restored snapshot can't carry a stale lock that corrupts state.
+_EXCLUDE_REGEX = r".*\.lock$|.*SingletonLock$|.*-journal$|.*-wal$"
 
 
 def _build_exclude_args() -> list[str]:
-    args = []
-    for pattern in _EXCLUDE_PATTERNS:
-        args += ["--exclude", pattern]
-    return args
+    return ["--exclude", _EXCLUDE_REGEX]
 
 
 class StateSync:

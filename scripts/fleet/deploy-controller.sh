@@ -118,8 +118,11 @@ fi
 # ---------------------------------------------------------------------------
 # 4. Start under systemd
 # ---------------------------------------------------------------------------
-_info "4. enable + start hermes-controller via systemd"
-ssh_vm "sudo systemctl daemon-reload && sudo systemctl enable --now hermes-controller && \
+_info "4. enable + (re)start hermes-controller via systemd"
+# `enable --now` is a NO-OP on an already-running unit, so a redeploy would keep
+# the OLD code. `restart` always reloads the freshly-copied .py files.
+ssh_vm "sudo systemctl daemon-reload && sudo systemctl enable hermes-controller && \
+    sudo systemctl restart hermes-controller && \
     sleep 2 && sudo systemctl --no-pager --full status hermes-controller | head -20"
 
 echo ""

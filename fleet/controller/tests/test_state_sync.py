@@ -7,7 +7,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from state_sync import StateSync, _EXCLUDE_PATTERNS
+import re
+
+from state_sync import StateSync, _EXCLUDE_REGEX
+
+
+def _exclude_value(cmd):
+    """Pull the regex passed to --exclude out of an rsync argv."""
+    i = cmd.index("--exclude")
+    return cmd[i + 1]
 
 
 def _ok_run(*args, **kwargs) -> subprocess.CompletedProcess:
@@ -60,10 +68,14 @@ class TestRehydrate:
         ss = StateSync("my-bucket", local_root=str(tmp_path), run_cmd=recording_run)
         ss.rehydrate("user1")
 
-        cmd = calls[0]
-        cmd_str = " ".join(cmd)
-        for pattern in _EXCLUDE_PATTERNS:
-            assert pattern in cmd_str, f"Expected {pattern!r} in rsync command"
+        # The exclude must be a VALID Python regex (a glob like "*.lock" crashes
+        # gcloud with "nothing to repeat") that matches the lock/WAL/journal/
+        # singleton files but spares real state files.
+        rx = re.compile(_exclude_value(calls[0]))  # raises if not a valid regex
+        for f in ("foo.lock", "default/SingletonLock", "hermes.db-journal", "hermes.db-wal"):
+            assert rx.match(f), f"exclude regex should drop {f!r}"
+        for keep in ("hermes.db", "config.json", "logins.json"):
+            assert not rx.match(keep), f"exclude regex must NOT drop {keep!r}"
 
     def test_rehydrate_failsoft_on_subprocess_exception(self, tmp_path):
         def raising_run(*a, **kw):
@@ -109,8 +121,8 @@ class TestMirror:
 
         ss = StateSync("my-bucket", run_cmd=recording_run)
         ss.mirror("userY")
-        cmd_str = " ".join(calls[0])
-        assert "SingletonLock" in cmd_str
+        rx = re.compile(_exclude_value(calls[0]))
+        assert rx.match("default/SingletonLock")
 
     def test_mirror_excludes_wal_files(self):
         calls = []
@@ -120,9 +132,9 @@ class TestMirror:
 
         ss = StateSync("my-bucket", run_cmd=recording_run)
         ss.mirror("userZ")
-        cmd_str = " ".join(calls[0])
-        assert "*-wal" in cmd_str
-        assert "*-journal" in cmd_str
+        rx = re.compile(_exclude_value(calls[0]))
+        assert rx.match("hermes.db-wal")
+        assert rx.match("hermes.db-journal")
 
     def test_quiesce_before_mirror_ordering(self):
         """Verify the mirror() call itself doesn't stop anything —

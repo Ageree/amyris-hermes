@@ -62,6 +62,11 @@ ENV PIP_DEFAULT_TIMEOUT=120 \
 # needs at import time so that a change to an unrelated script doesn't bust
 # the layer cache.
 COPY lab/skeleton/ /app/skeleton/
+# Default SOUL voice for the fast lane, baked at the LOWEST-precedence path
+# (_load_soul checks ../personality/SOUL.md last) so a per-tenant
+# $HERMES_HOME/SOUL.md in the bind mount still overrides it — but a fresh tenant
+# with an empty mount gets the lowercase persona instead of a voiceless reply.
+COPY lab/personality/SOUL.md /app/personality/SOUL.md
 # Copy the test suite so the build-time gate can run it.
 COPY lab/tests/    /app/tests/
 # Copy lab-level pytest.ini so markers / testpaths are respected.
