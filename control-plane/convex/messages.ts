@@ -196,17 +196,45 @@ export const claimNextForUser = mutation({
 // agentInstances bump (a shared worker is not a per-user warm instance). claimNext
 // and claimNextForUser are UNTOUCHED — this is purely additive and reverts by
 // unsetting WORKER_MODE=shared (the worker falls back to scoped/legacy).
+//
+// CUTOVER COEXISTENCE: a user flipped to the per-user fleet (agentInstances.desired
+// === "running") is served EXCLUSIVELY by their own container via claimNextForUser.
+// The shared worker MUST skip such a user's messages, or it would MIS-ROUTE them —
+// serving a fleeted user without their container's persistent state/logins (the
+// atomic claim already prevents a double-reply; the hazard is wrong-server, not dup).
+// This skip makes shared+fleet coexistence safe and is the mechanism for a gradual,
+// loss-free cutover: flip users to the fleet one at a time; the shared worker yields
+// each as it is flipped. It is INERT until at least one user has desired==="running".
 // ---------------------------------------------------------------------------
+// Oldest-first scan window for the shared claimer. ponytail: bounded so the mutation
+// stays O(window); fleeted users' rows are drained by their own containers so they do
+// not pile up in this view. If a flood of fleeted-user rows ever exceeds the window,
+// the shared worker simply yields them to the fleet (correct, never lossy) — raise
+// the window if that starves shared (non-fleeted) traffic.
+const SHARED_CLAIM_SCAN = 50;
+
 export const claimNextAny = mutation({
   args: { workerSecret: v.string() },
   returns: claimReturns,
   handler: async (ctx, { workerSecret }) => {
     assertWorker(workerSecret);
-    const next = await ctx.db
+    // Build the set of fleeted userIds (one agentInstances row per fleeted user, so
+    // this is small). by_desired_status is [desired, status] → prefix-eq on desired.
+    const fleeted = new Set<string>();
+    for (const inst of await ctx.db
+      .query("agentInstances")
+      .withIndex("by_desired_status", (q) => q.eq("desired", "running"))
+      .collect()) {
+      fleeted.add(inst.userId);
+    }
+    // Oldest-first queued; claim the first NOT owned by a fleeted user. Legacy rows
+    // with no userId are always claimable by the shared worker.
+    const candidates = await ctx.db
       .query("messages")
       .withIndex("by_status", (q) => q.eq("status", "queued"))
       .order("asc")
-      .first();
+      .take(SHARED_CLAIM_SCAN);
+    const next = candidates.find((m) => !m.userId || !fleeted.has(m.userId));
     if (!next) return null;
     await ctx.db.patch(next._id, { status: "processing", claimedAt: Date.now() });
     return {

@@ -67,6 +67,11 @@ usermod -aG docker hermes-fleet
 # /etc/hermes-fleet — controller.env EnvironmentFile (deployed in L6, mode 0600).
 mkdir -p /data/tenants /opt/hermes-fleet /etc/hermes-fleet
 chown -R hermes-fleet:hermes-fleet /data/tenants /opt/hermes-fleet
+# /etc/hermes-fleet holds controller.env (0600). systemd reads EnvironmentFile as
+# root, but the controller (running as hermes-fleet) and any `sudo -u hermes-fleet`
+# debugging must be able to TRAVERSE this dir — so own it by hermes-fleet, mode 0750
+# (no "other" access to the secrets).
+chown hermes-fleet:hermes-fleet /etc/hermes-fleet
 chmod 0750 /etc/hermes-fleet
 
 # --- docker -> Artifact Registry auth (as hermes-fleet, uses VM SA via metadata) --
