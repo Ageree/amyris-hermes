@@ -28,14 +28,15 @@ crons.interval(
   {},
 );
 
-// Flip free-tier containers idle past the TTL to desired="stopped" so the
-// controller stops them ($0 idle compute). Paid stays warm.
-crons.interval(
-  "reap idle fleet instances",
-  { minutes: 5 },
-  internal.fleet.reapIdleInstances,
-  {},
-);
+// Idle reaping DISABLED — every user's agent must stay warm 24/7 (operator
+// requirement 2026-06-17). Previously free-tier containers idle > 30 min were
+// flipped desired="stopped" for $0 idle compute; now NO tier is reaped, so a
+// user's container lives until an explicit stop or a stale-heartbeat relaunch.
+// reapIdleInstances{,Impl} are kept (callable manually) for easy re-enable.
+// ponytail: trades free-tier idle cost for always-warm. CEILING — every user =
+// one always-on container (Chrome+Hermes+worker); a single VM (e2-standard-2)
+// holds only a handful, so re-enable this cron (or add bigger/more VMs + a
+// scheduler) before onboarding many free users.
 
 // Housekeeping: mark expired-but-still-"active" pairing tokens "expired" (consume
 // already self-checks expiry; this keeps the one-active-per-user invariant clean).
