@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 import signal
 import threading
 import time
@@ -1008,11 +1009,92 @@ def run_loop(
             sleep_fn(interval)
 
 
+# ---------------------------------------------------------------------------
+# browser-harness (Lane B): replace the built-in browser with the harness skill
+# ---------------------------------------------------------------------------
+# Default Hermes "cli" toolsets MINUS "browser" — the built-in browser is
+# replaced by the browser-harness skill, which Hermes drives via the `terminal`
+# tool. ponytail: hardcoded to mirror hermes v0.11 cli defaults; if hermes adds a
+# cli toolset, add it here too (the alternative — importing hermes' resolver — is
+# unavailable: hermes lives in a separate venv the worker cannot import).
+_CLI_TOOLSETS_NO_BROWSER = [
+    "clarify", "code_execution", "cronjob", "delegation", "file", "image_gen",
+    "memory", "messaging", "session_search", "skills", "terminal", "todo",
+    "tts", "vision", "web",
+]
+
+
+def _truthy(v: str) -> bool:
+    return str(v).strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def seed_browser_harness(hermes_home: str) -> bool:
+    """Idempotently flip a tenant to browse via browser-harness (Lane B) instead
+    of Hermes' built-in browser: disable the `browser` toolset, allowlist BU_*
+    through the terminal env scrubber, and seed the harness skill into the
+    tenant's HERMES_HOME. Returns True if applied.
+
+    Kill-switch: BROWSER_HARNESS_ENABLED=0 makes this a no-op and the built-in
+    browser stays as the fallback. Fail-soft: any error leaves the built-in
+    browser in place rather than crash-looping the worker.
+    """
+    if not _truthy(os.environ.get("BROWSER_HARNESS_ENABLED", "1")):
+        return False
+    try:
+        import yaml  # pyyaml (skeleton requirement)
+
+        home = os.path.expanduser(hermes_home)
+        os.makedirs(home, exist_ok=True)
+        cfg_path = os.path.join(home, "config.yaml")
+        cfg: dict = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        # Disable built-in browser via an explicit cli toolset list: the
+        # `hermes chat` path resolves platform_toolsets, NOT disabled_toolsets.
+        cfg.setdefault("platform_toolsets", {})["cli"] = list(_CLI_TOOLSETS_NO_BROWSER)
+        # Let BU_* reach the harness through the terminal env scrubber.
+        term = cfg.setdefault("terminal", {})
+        ep = set(term.get("env_passthrough") or [])
+        ep.update(["BU_NAME", "BU_CDP_URL", "BU_CDP_WS"])
+        term["env_passthrough"] = sorted(ep)
+        # Writing a config.yaml short-circuits Hermes' env-based model resolution
+        # (a fresh tenant with NO config.yaml gets its model from MINIMAX_* env;
+        # once a config exists, Hermes loads it and would have no model -> HTTP 400
+        # "No models provided"). So seed the model block from the same env the
+        # controller injects (setdefault: never clobber a tenant's own model).
+        key = os.environ.get("MINIMAX_API_KEY", "")
+        if key:
+            is_or = key.startswith("sk-or-")
+            model = cfg.setdefault("model", {})
+            model.setdefault("default", os.environ.get("MINIMAX_MODEL")
+                             or ("minimax/minimax-m3" if is_or else "MiniMax-M3"))
+            model.setdefault("provider", "minimax")
+            model.setdefault("base_url", os.environ.get("MINIMAX_BASE_URL")
+                             or ("https://openrouter.ai/api/v1" if is_or
+                                 else "https://api.minimax.io/v1"))
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        # Seed the skill instruction so Hermes knows to drive the harness.
+        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "..", "skills", "browser-harness", "SKILL.md")
+        if os.path.exists(src):
+            dst_dir = os.path.join(home, "skills", "browser-harness")
+            os.makedirs(dst_dir, exist_ok=True)
+            shutil.copyfile(src, os.path.join(dst_dir, "SKILL.md"))
+        log.info("browser-harness: tenant flipped to Lane B (built-in browser disabled)")
+        return True
+    except Exception as e:  # fail-soft: keep the built-in browser
+        log.warning("browser-harness seed failed (built-in browser remains): %s", e)
+        return False
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     cfg = WorkerConfig.from_env()
+    seed_browser_harness(cfg.hermes_home)
     # Graceful shutdown (Bug H3): catch docker stop's SIGTERM (and Ctrl-C) so an
     # in-flight turn finishes instead of being SIGKILLed. Fail-soft.
     _install_signal_handlers()

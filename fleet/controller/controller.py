@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Protocol
@@ -197,6 +198,14 @@ def _record_crash_relaunch(instance: dict, deps: ControllerDeps) -> bool:
     return False
 
 
+def _sanitize_bu_name(user_id: str) -> str:
+    """browser-harness daemon name for a tenant. BU_NAME must match
+    ``[A-Za-z0-9_-]{1,64}``; Convex userIds already do, but sanitize defensively
+    so a malformed id can never break the harness invocation."""
+    name = re.sub(r"[^A-Za-z0-9_-]", "-", user_id or "")[:64]
+    return name or "tenant"
+
+
 def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref: str) -> dict[str, str]:
     """Build the env dict for docker run.
 
@@ -246,6 +255,14 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
         "SENDBLUE_FROM_NUMBER": _get("SENDBLUE_FROM_NUMBER"),
         "TELEGRAM_BOT_TOKEN": _get("TELEGRAM_BOT_TOKEN"),
         "EXA_API_KEY": _get("EXA_API_KEY"),
+        # browser-harness (Lane B): per-user CDP browser, driven by Hermes via
+        # the terminal tool. BU_NAME isolates the harness daemon per user;
+        # BU_CDP_URL is the container-local headless Chrome the entrypoint
+        # launches. Kill-switch BROWSER_HARNESS_ENABLED=0 keeps the built-in
+        # browser. ponytail: local Chrome only; remote/cloud would set BU_CDP_WS.
+        "BU_NAME": _sanitize_bu_name(user_id),
+        "BU_CDP_URL": "http://127.0.0.1:9222",
+        "BROWSER_HARNESS_ENABLED": os.environ.get("BROWSER_HARNESS_ENABLED", "1"),
     }
     # Per-instance Secret Manager ref — injected ONLY when the (not-yet-wired)
     # per-instance-secrets feature is on. The worker reads WORKER_SECRET directly and

@@ -552,6 +552,31 @@ class TestBuildEnvBootsWorker:
         env = _build_env("u1", "inst1", test_cfg, "secret-ref")
         assert env["MINIMAX_BASE_URL"] == "https://api.minimax.io/v1"
 
+    def test_build_env_injects_browser_harness_vars(self, test_cfg, monkeypatch):
+        """browser-harness (Lane B): per-user BU_NAME, the local CDP url, and the
+        kill-switch must reach the container so the worker seed + entrypoint fire."""
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        assert env["BU_NAME"] == "u1"
+        assert env["BU_CDP_URL"] == "http://127.0.0.1:9222"
+        assert env["BROWSER_HARNESS_ENABLED"] == "1"
+
+    def test_build_env_sanitizes_bu_name(self, test_cfg, monkeypatch):
+        """A userId with chars outside [A-Za-z0-9_-] is sanitized (the harness
+        rejects a bad BU_NAME); an empty id falls back to 'tenant'."""
+        self._set_controller_env(monkeypatch)
+        env = _build_env("user/../x y", "inst1", test_cfg, "secret-ref")
+        assert env["BU_NAME"] == "user----x-y"  # '/', '.', ' ' -> '-'
+        assert _build_env("", "inst1", test_cfg, "secret-ref")["BU_NAME"] == "tenant"
+
+    def test_build_env_kill_switch_off_propagates(self, test_cfg, monkeypatch):
+        """BROWSER_HARNESS_ENABLED=0 on the controller reaches the container so the
+        built-in browser stays the fallback."""
+        self._set_controller_env(monkeypatch)
+        monkeypatch.setenv("BROWSER_HARNESS_ENABLED", "0")
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        assert env["BROWSER_HARNESS_ENABLED"] == "0"
+
     def test_built_env_constructs_worker_config_with_no_keyerror(self, test_cfg, monkeypatch):
         """The smoking gun: feed _build_env's output to the REAL worker config
         builder. If any required name is missing/misnamed, from_env raises KeyError

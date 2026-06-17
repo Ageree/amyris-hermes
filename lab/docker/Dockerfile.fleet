@@ -67,6 +67,12 @@ COPY lab/skeleton/ /app/skeleton/
 # $HERMES_HOME/SOUL.md in the bind mount still overrides it — but a fresh tenant
 # with an empty mount gets the lowercase persona instead of a voiceless reply.
 COPY lab/personality/SOUL.md /app/personality/SOUL.md
+# browser-harness (Lane B): the skill instruction Hermes follows to browse, and
+# the container entrypoint that launches headless Chrome-CDP then execs the
+# worker. Baked in the base stage so both image variants (INSTALL_HERMES 0/1)
+# have them and the worker seed can copy the skill into each tenant's HERMES_HOME.
+COPY lab/skills/browser-harness/ /app/skills/browser-harness/
+COPY lab/docker/fleet-entrypoint.sh /app/skeleton/fleet-entrypoint.sh
 # Copy the test suite so the build-time gate can run it.
 COPY lab/tests/    /app/tests/
 # Copy lab-level pytest.ini so markers / testpaths are respected.
@@ -131,6 +137,24 @@ RUN git config --global http.postBuffer 524288000 \
     && test -d /opt/hermes-agent/.git \
     && python -m venv /opt/hermes-agent/venv \
     && /opt/hermes-agent/venv/bin/pip install --no-cache-dir -e /opt/hermes-agent
+
+# browser-harness (Lane B): self-healing Chrome/CDP browser that Hermes drives
+# via its terminal tool (no own LLM loop — Hermes is the only brain). Installed
+# in an ISOLATED venv so its pins (cdp-use/websockets/pillow) never collide with
+# the worker or Hermes deps; the CLI entry is symlinked onto PATH so a bare
+# `browser-harness` resolves for the terminal subprocess. Clone is retried like
+# the Hermes clone above (flaky-link resilience).
+RUN for i in 1 2 3; do \
+        rm -rf /opt/browser-harness \
+        && git clone --depth 1 https://github.com/browser-use/browser-harness /opt/browser-harness \
+        && break \
+        || { echo "browser-harness clone attempt $i failed; retrying in 5s"; sleep 5; }; \
+    done \
+    && test -d /opt/browser-harness/.git \
+    && python -m venv /opt/bh-venv \
+    && /opt/bh-venv/bin/pip install --no-cache-dir /opt/browser-harness \
+    && ln -sf /opt/bh-venv/bin/browser-harness /usr/local/bin/browser-harness \
+    && /usr/local/bin/browser-harness --version
 
 # ---------------------------------------------------------------------------
 # Select the correct intermediate stage based on the ARG.
@@ -208,6 +232,7 @@ ENV WORKER_MODE=scoped \
 RUN groupadd -g 10001 hermes \
     && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin hermes \
     && mkdir -p /data/tenants/default \
+    && chmod +x /app/skeleton/fleet-entrypoint.sh \
     && chown -R hermes:hermes /app /data/tenants \
     && if [ -d /opt/hermes-agent ]; then chown -R hermes:hermes /opt/hermes-agent; fi
 
@@ -219,6 +244,7 @@ ENTRYPOINT ["/usr/bin/tini", "--"]
 
 USER hermes
 
-# Default CMD: run the worker in scoped mode.  All required env vars
+# Default CMD: the entrypoint launches headless Chrome-CDP for browser-harness
+# (Lane B), then execs the worker in scoped mode. All required env vars
 # (CONVEX_URL, WORKER_SECRET, USER_ID, etc.) must be injected at runtime.
-CMD ["python3", "worker.py"]
+CMD ["./fleet-entrypoint.sh"]

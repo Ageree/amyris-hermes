@@ -6,3 +6,4 @@ uvicorn
 requests
 httpx
 pytest
+pyyaml  # worker seeds the tenant config.yaml (browser-harness flip)
