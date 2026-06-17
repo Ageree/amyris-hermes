@@ -56,6 +56,16 @@ _APPROVAL = re.compile(
     r"✓ Added to permanent allowlist|⏱ Timeout - denying command)[ \t]*$",
     re.DOTALL | re.MULTILINE,
 )
+# Even in --quiet, Hermes renders progress + answer-panel chrome when a SKILL
+# loads or the TERMINAL tool runs — i.e. the browse-via-harness path: a
+# "┊ 📚 preparing skill_view…" progress tree, a "╭─ ⚕ Hermes ─╮" answer-panel
+# frame, and a trailing "session_id: …" footer (observed live 2026-06-17 in the
+# fleet e2e — without this the user gets 3 bubbles of pure framing). None of it
+# is the answer; strip these decorative lines.
+# ponytail: line-prefix heuristic on box-drawing chars + the session footer; a
+# reply whose CONTENT legitimately begins with ┊/╭/╰ (rare for chat) would lose
+# that line — widen the class if it ever bites.
+_FRAME = re.compile(r"^[ \t]*(?:[┊╭╰].*|session_id:.*)$", re.MULTILINE)
 
 
 def _with_history(message: str, history: Optional[list]) -> str:
@@ -129,5 +139,7 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
     cleaned = _THINK.sub("", proc.stdout)
     cleaned = _ANSI.sub("", cleaned)
     cleaned = _APPROVAL.sub("", cleaned)
-    cleaned = _NOTICE.sub("", cleaned).strip()
+    cleaned = _NOTICE.sub("", cleaned)
+    cleaned = _FRAME.sub("", cleaned)
+    cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
     return cleaned or "(no reply)"

@@ -123,6 +123,29 @@ def test_run_hermes_strips_approval_block_on_timeout_and_allowed():
         assert out == "done.", f"resolution={resolution!r} -> {out!r}"
 
 
+def test_run_hermes_strips_skill_terminal_frame_and_session_footer():
+    """Live fleet e2e 2026-06-17 (browse-via-harness): loading a SKILL + using the
+    TERMINAL tool makes --quiet Hermes render a "┊ 📚 preparing…" progress tree, a
+    "╭─ Hermes ─╮" answer-panel frame, and a "session_id:" footer. Only the answer
+    must survive — else the user gets bubbles of pure framing (seen live)."""
+    stdout = (
+        "┊ 📚 preparing skill_view…\n"
+        "  ┊ 💻 preparing terminal…\n"
+        "\n"
+        "╭─ ⚕ Hermes ──────────────────────────────────╮\n"
+        "Example Domain\n"
+        "\n"
+        "session_id: 20260617_175213_334b72\n"
+    )
+    fake = MagicMock(returncode=0, stdout=stdout, stderr="")
+    with patch("hermes_bridge.subprocess.run", return_value=fake):
+        out = run_hermes("open example.com", hermes_home="/h", hermes_dir="/d",
+                         python_bin="/p")
+    assert out == "Example Domain", repr(out)
+    for junk in ("preparing", "session_id", "╭", "┊"):
+        assert junk not in out
+
+
 def test_run_hermes_raises_on_nonzero():
     fake = MagicMock(returncode=1, stdout="", stderr="boom")
     with patch("hermes_bridge.subprocess.run", return_value=fake):
