@@ -30,13 +30,29 @@ test.describe("landing page", () => {
   });
 
   test("has a sign-in affordance linking to /signin", async ({ page }) => {
-    // The nav exposes a plain "sign in" link.
-    const signIn = page.getByRole("link", { name: /^sign in$/i });
+    // The nav exposes a plain "sign in" link. Scope to the header so the
+    // (also valid) footer "sign in" link doesn't make this ambiguous.
+    const signIn = page.locator("header").getByRole("link", { name: /^sign in$/i });
     await expect(signIn).toBeVisible();
     await expect(signIn).toHaveAttribute("href", /\/signin$/);
 
     // And it actually navigates to the sign-in surface.
     await signIn.click();
+    await expect(page).toHaveURL(/\/signin(\b|\/|\?|$)/);
+    await expect(page.getByTestId("signin-card")).toBeVisible();
+  });
+
+  test("the primary 'get started' CTA begins agent creation at /signin", async ({ page }) => {
+    // The redesigned hero leads with a single "get started" button — the entry
+    // point to creating an assistant. It must reach the sign-in surface.
+    const getStarted = page
+      .locator("main")
+      .getByRole("link", { name: /^get started$/i })
+      .first();
+    await expect(getStarted).toBeVisible();
+    await expect(getStarted).toHaveAttribute("href", /\/signin$/);
+
+    await getStarted.click();
     await expect(page).toHaveURL(/\/signin(\b|\/|\?|$)/);
     await expect(page.getByTestId("signin-card")).toBeVisible();
   });

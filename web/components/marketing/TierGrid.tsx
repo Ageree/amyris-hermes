@@ -5,9 +5,9 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { TIERS, type TierSpec } from "@/lib/tiers";
 
-// Static pricing grid rendered from the marketing-side tier mirror. Every tier
-// ships BOTH channels — the channel badges make that explicit on each card. The
-// pro card is highlighted. Server component; each CTA is a link to /signin.
+// Static pricing grid from the marketing-side tier mirror. Every tier ships BOTH
+// channels — the channel badges make that explicit. The pro card is highlighted.
+// Server component; each CTA is a "get started" link (one signup label, page-wide).
 
 function priceLabel(tier: TierSpec): string {
   return tier.priceUsd === 0 ? "free" : `$${tier.priceUsd}`;
@@ -18,8 +18,10 @@ function TierCard({ tier }: { tier: TierSpec }) {
   return (
     <Card
       className={cn(
-        "relative flex h-full flex-col gap-5",
-        highlighted && "border-lime/40 bg-surface-2 ring-1 ring-lime/30",
+        "relative flex h-full flex-col gap-5 transition-[transform,border-color] duration-200 hover:-translate-y-1",
+        highlighted
+          ? "border-lime/40 bg-surface-2 ring-1 ring-lime/30"
+          : "hover:border-border-strong",
       )}
     >
       {highlighted && (
@@ -31,7 +33,7 @@ function TierCard({ tier }: { tier: TierSpec }) {
       <div>
         <CardTitle className="lowercase">{tier.label}</CardTitle>
         <div className="mt-3 flex items-baseline gap-1">
-          <span className="font-mono text-4xl font-medium text-ink">
+          <span className="font-mono text-4xl font-semibold tracking-tight text-ink">
             {priceLabel(tier)}
           </span>
           {tier.priceUsd > 0 && (
@@ -40,7 +42,7 @@ function TierCard({ tier }: { tier: TierSpec }) {
         </div>
       </div>
 
-      <div className="font-mono text-sm text-muted">
+      <div className="font-mono text-sm text-lime">
         {tier.msgQuota.toLocaleString()} turns / mo
       </div>
 
@@ -71,20 +73,22 @@ function TierCard({ tier }: { tier: TierSpec }) {
 
 export function TierGrid() {
   return (
-    <section id="pricing" className="mx-auto max-w-5xl px-6 py-20">
-      <div className="mx-auto mb-12 max-w-lg text-center">
-        <h2 className="text-3xl font-medium lowercase tracking-tight text-ink sm:text-4xl">
-          simple pricing
+    <section id="pricing" className="mx-auto max-w-6xl px-6 py-24">
+      <div className="reveal mx-auto mb-14 max-w-lg text-center">
+        <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
+          one assistant. pick your headroom.
         </h2>
-        <p className="mt-3 text-muted">
-          both imessage &amp; telegram on every tier. start free, upgrade when
-          you outgrow it.
+        <p className="mt-4 text-lg leading-relaxed text-muted">
+          both imessage &amp; telegram on every tier. start free, upgrade when you
+          outgrow it.
         </p>
       </div>
 
       <div className="grid gap-5 md:grid-cols-3">
         {TIERS.map((tier) => (
-          <TierCard key={tier.name} tier={tier} />
+          <div key={tier.name} className="reveal">
+            <TierCard tier={tier} />
+          </div>
         ))}
       </div>
     </section>

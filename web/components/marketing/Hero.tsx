@@ -3,49 +3,54 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { BubbleMock } from "./BubbleMock";
 
-// The fold. Oversized lowercase headline + subcopy about a REAL assistant with
-// a REAL browser, primary CTA, and the decorative chat mock beside it. Server
-// component — CTAs are plain links.
+// The fold: asymmetric split (copy left, live chat device right) over an ambient
+// lime aurora + faded hairline grid. Hero stack = 4 text elements exactly
+// (eyebrow, headline, subtext, CTA pair). Server component; CTAs are links.
 export function Hero() {
   return (
-    <section className="mx-auto max-w-5xl px-6 pb-20 pt-16 sm:pt-24">
-      <div className="grid items-center gap-12 lg:grid-cols-[1.15fr_1fr]">
-        <div className="rise">
-          <Badge tone="lime" className="mb-6">
-            <span
-              aria-hidden
-              className="inline-block h-1.5 w-1.5 rounded-full bg-lime pulse-dot"
-            />
-            live now
-          </Badge>
+    <section className="relative overflow-hidden">
+      {/* ambient backdrop — purely decorative, sits behind content */}
+      <div aria-hidden className="grid-lines absolute inset-0 -z-10" />
+      <div aria-hidden className="aurora absolute -top-32 right-[-10%] h-[520px] w-[640px] -z-10" />
 
-          <h1 className="font-sans text-4xl font-medium leading-[1.05] tracking-tight text-ink sm:text-6xl lg:text-7xl">
-            your assistant.
-            <br />
-            on <span className="text-lime">imessage</span> &amp;{" "}
-            <span className="text-lime">telegram</span>.
-          </h1>
+      <div className="mx-auto max-w-6xl px-6 pb-24 pt-16 sm:pt-20">
+        <div className="grid items-center gap-14 lg:grid-cols-[1.1fr_0.9fr]">
+          <div>
+            <Badge tone="lime" className="rise mb-7">
+              <span aria-hidden className="inline-block h-1.5 w-1.5 rounded-full bg-lime pulse-dot" />
+              live now
+            </Badge>
 
-          <p className="mt-6 max-w-md text-base leading-relaxed text-muted sm:text-lg">
-            a real assistant with a real browser. it books, buys, digs through
-            the web, and reports back — right in the chat you already use. just
-            text it.
-          </p>
+            <h1 className="rise text-5xl font-semibold leading-[1.02] tracking-tight text-ink sm:text-6xl lg:text-7xl" style={{ animationDelay: "60ms" }}>
+              your assistant,
+              <br />
+              on <span className="text-lime">imessage</span>
+              <span className="text-faint"> &amp; </span>
+              <span className="text-lime">telegram</span>.
+            </h1>
 
-          <div className="mt-8 flex flex-wrap items-center gap-3">
-            <Link href="/signin">
-              <Button variant="primary" size="lg">
-                get started
-              </Button>
-            </Link>
-            <span className="font-mono text-sm text-faint">
-              free to start · no app to install
-            </span>
+            <p className="rise mt-7 max-w-md text-lg leading-relaxed text-muted" style={{ animationDelay: "120ms" }}>
+              a real assistant with a real browser. it books, buys, researches,
+              and reports back in your chat.
+            </p>
+
+            <div className="rise mt-9 flex flex-wrap items-center gap-3" style={{ animationDelay: "180ms" }}>
+              <Link href="/signin">
+                <Button variant="primary" size="lg">
+                  get started
+                </Button>
+              </Link>
+              <a href="#how">
+                <Button variant="secondary" size="lg">
+                  see it work
+                </Button>
+              </a>
+            </div>
           </div>
-        </div>
 
-        <div className="flex justify-center lg:justify-end">
-          <BubbleMock />
+          <div className="flex justify-center lg:justify-end">
+            <BubbleMock />
+          </div>
         </div>
       </div>
     </section>

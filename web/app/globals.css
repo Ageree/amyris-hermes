@@ -1,64 +1,217 @@
 @import "tailwindcss";
 
-/* ---------------------------------------------------------------------------
-   Design system — "a calm terminal for a living assistant" (design §7).
-   Near-black canvas, ONE signal-lime accent (live pulse + primary CTAs), mono
-   wordmark + humanist body. Lowercase voice is content, not CSS. Tailwind v4
-   CSS-first theme: these tokens become utilities (bg-canvas, text-lime, etc.).
---------------------------------------------------------------------------- */
+/* ===========================================================================
+   hermes — design system v2: "a calm, living terminal"
+
+   Redesign read: dark-tech consumer AI product (an assistant that lives in
+   imessage & telegram and drives a REAL browser). Brand-locked: near-black
+   canvas, ONE signal-lime accent, lowercase voice. Overhauled: type system
+   (Geist), a deeper surface/border ladder, motivated motion (scroll-driven
+   reveals, ambient lime glow, fine grain), and tactile interactive states.
+
+   Tailwind v4 CSS-first theme — tokens below become utilities
+   (bg-canvas, text-lime, border-border, …). Lowercase voice is content, not CSS.
+=========================================================================== */
 @theme {
-  --color-canvas: #0a0a0b;
-  --color-surface: #131316;
-  --color-surface-2: #1b1b20;
-  --color-border: #2a2a31;
-  --color-ink: #ededf0;
-  --color-muted: #9a9aa6;
-  --color-faint: #8a8a96;
+  /* surface ladder — off-black, never pure #000 */
+  --color-canvas: #08090a;
+  --color-surface: #101114;
+  --color-surface-2: #17191d;
+  --color-surface-3: #1f2228;
+  /* kept as `border` (not renamed) so existing border-border/bg-border utilities
+     across the dashboard + connect wizard keep working untouched */
+  --color-border: #262a31;
+  --color-border-strong: #343943;
+
+  /* ink ladder — off-white, never pure #fff */
+  --color-ink: #f3f4f6;
+  --color-muted: #a6a9b3;
+  --color-faint: #71757f;
+
+  /* the one accent — signal lime (live pulse + primary actions) */
   --color-lime: #c6f24e;
-  --color-lime-dim: #9bbf3a;
-  --color-danger: #ff6b6b;
+  --color-lime-dim: #a9d63f;
+  --color-lime-deep: #8bb52f;
+  --color-danger: #ff7a7a;
 
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Inter, sans-serif;
-  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, monospace;
+  /* type — Geist (self-hosted via the geist package; deploy-safe, no network) */
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
-  --radius: 0.75rem;
+  /* one corner-radius ladder for the whole page */
+  --radius-sm: 0.5rem;
+  --radius: 0.875rem;
+  --radius-lg: 1.25rem;
+  --radius-xl: 1.75rem;
 }
 
-* {
-  border-color: var(--color-border);
+@layer base {
+  * {
+    border-color: var(--color-border);
+  }
+
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    /* tighten default tracking for the display-forward look */
+    letter-spacing: -0.011em;
+  }
+
+  ::selection {
+    background: var(--color-lime);
+    color: var(--color-canvas);
+  }
+
+  /* a consistent, visible focus ring across every interactive element (a11y) */
+  :focus-visible {
+    outline: 2px solid var(--color-lime);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm);
+  }
 }
 
-html {
-  color-scheme: dark;
+/* ---------------------------------------------------------------------------
+   Ambient: a fixed, GPU-cheap grain overlay (pointer-events-none, fixed → no
+   scroll repaint cost). Adds texture so flat dark surfaces don't read as cheap.
+--------------------------------------------------------------------------- */
+.grain {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: screen;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-body {
-  background-color: var(--color-canvas);
-  color: var(--color-ink);
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
-  text-rendering: optimizeLegibility;
+/* a soft lime aurora that sits behind the hero — radial, blurred, low alpha */
+.aurora {
+  position: absolute;
+  pointer-events: none;
+  z-index: 0;
+  background:
+    radial-gradient(40% 50% at 70% 30%, color-mix(in oklab, var(--color-lime) 22%, transparent), transparent 70%),
+    radial-gradient(35% 45% at 25% 70%, color-mix(in oklab, var(--color-lime-deep) 14%, transparent), transparent 70%);
+  filter: blur(40px);
 }
 
-/* The live "connected" pulse — a lime dot that breathes until a binding lands. */
+/* a hairline grid backdrop, faded with a mask (organizes the hero's negative space) */
+.grid-lines {
+  background-image:
+    linear-gradient(to right, color-mix(in oklab, var(--color-border) 60%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in oklab, var(--color-border) 60%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black, transparent 75%);
+  mask-image: radial-gradient(ellipse 70% 60% at 50% 0%, black, transparent 75%);
+}
+
+/* ---------------------------------------------------------------------------
+   Motion. MOTION_INTENSITY 5 — motivated, restrained, fully reduced-motion safe.
+--------------------------------------------------------------------------- */
+
+/* the live "connected" pulse — breathes until a binding lands */
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.35; transform: scale(0.82); }
+  50% { opacity: 0.4; transform: scale(0.78); }
 }
-.pulse-dot {
-  animation: pulse-dot 1.4s ease-in-out infinite;
-}
+.pulse-dot { animation: pulse-dot 1.6s ease-in-out infinite; }
 
-/* Restrained entrance for hero/bubbles. */
+/* concentric ring that radiates from the live dot */
+@keyframes ping-ring {
+  0% { transform: scale(0.6); opacity: 0.7; }
+  100% { transform: scale(2.6); opacity: 0; }
+}
+.ping-ring { animation: ping-ring 1.8s cubic-bezier(0, 0, 0.2, 1) infinite; }
+
+/* load-time staggered entrance for the hero + chat device */
 @keyframes rise {
-  from { opacity: 0; transform: translateY(6px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.rise {
-  animation: rise 0.5s ease-out both;
+.rise { animation: rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+/* CTA shimmer — a single sweep of light, used sparingly on the primary action */
+@keyframes shimmer {
+  0% { transform: translateX(-120%); }
+  100% { transform: translateX(120%); }
 }
 
-/* Skip-link: visually hidden until focused (item 6). */
+/* typing indicator dots in the chat device */
+@keyframes typing {
+  0%, 60%, 100% { opacity: 0.25; transform: translateY(0); }
+  30% { opacity: 1; transform: translateY(-2px); }
+}
+.typing-dot { animation: typing 1.2s ease-in-out infinite; }
+
+/* marquee: motivated use — a breadth-heavy strip of example prompts that don't
+   need individual attention. Animation ONLY under no-preference; the track is
+   also overflow-x scrollable so reduced-motion users can browse it by hand. */
+@keyframes marquee-left {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@keyframes marquee-right {
+  from { transform: translateX(-50%); }
+  to { transform: translateX(0); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .marquee-track {
+    animation: marquee-left 42s linear infinite;
+  }
+  .marquee-track.reverse {
+    animation-name: marquee-right;
+  }
+  .marquee:hover .marquee-track {
+    animation-play-state: paused;
+  }
+}
+
+/* reveal-once-and-stay: hidden from first paint, revealed by an Intersection
+   Observer (RevealObserver) the instant the element enters the viewport, then it
+   stays. <noscript> below unhides everything for the (rare) no-JS visitor, and
+   reduced-motion shows everything instantly. No scroll-scrub (no re-hide on
+   scroll up), and the content is always in the DOM for crawlers. */
+.reveal {
+  opacity: 0;
+  transform: translateY(18px);
+  transition:
+    opacity 0.7s cubic-bezier(0.16, 1, 0.3, 1),
+    transform 0.7s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.reveal.reveal-in {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .reveal {
+    opacity: 1;
+    transform: none;
+    transition: none;
+  }
+}
+
+/* reduced-motion: collapse everything to static/instant */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-dot, .ping-ring, .rise, .typing-dot { animation: none; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   a11y helpers — skip link (hidden until focused).
+--------------------------------------------------------------------------- */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -70,8 +223,6 @@ body {
   white-space: nowrap;
   border-width: 0;
 }
-
-/* Skip link becomes visible on focus so keyboard users can bypass nav (item 6). */
 .skip-link:focus-visible {
   position: fixed;
   top: 0.75rem;
@@ -85,33 +236,8 @@ body {
   clip: auto;
   white-space: normal;
   background: var(--color-lime);
-  color: #0a0a0b;
+  color: var(--color-canvas);
   font-size: 0.875rem;
   font-weight: 600;
-  border-radius: var(--radius);
-  outline: 2px solid var(--color-canvas);
-  outline-offset: 2px;
-}
-
-/* Reduced-motion support (item 3): disable animations for users who prefer it. */
-@media (prefers-reduced-motion: reduce) {
-  .pulse-dot {
-    animation: none;
-  }
-  .rise {
-    animation: none;
-  }
-  *,
-  *::before,
-  *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
-    scroll-behavior: auto !important;
-  }
-}
-
-::selection {
-  background: var(--color-lime);
-  color: #0a0a0b;
+  border-radius: var(--radius-sm);
 }

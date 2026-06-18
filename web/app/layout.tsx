@@ -1,12 +1,25 @@
 import type { Metadata } from "next";
 import { ConvexAuthNextjsServerProvider } from "@convex-dev/auth/nextjs/server";
+import { GeistSans } from "geist/font/sans";
+import { GeistMono } from "geist/font/mono";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
+import { RevealObserver } from "@/components/RevealObserver";
 import "./globals.css";
 
+// Geist, self-hosted via the `geist` package — no Google Fonts fetch at build or
+// runtime, so the Vercel build is deterministic. The CSS variables feed the
+// --font-sans / --font-mono tokens in globals.css (@theme).
 export const metadata: Metadata = {
-  title: "hermes — your assistant, on imessage & telegram",
+  metadataBase: new URL("https://hermes-fleet-web.vercel.app"),
+  title: "hermes, an assistant that lives in imessage & telegram",
   description:
-    "a real assistant with a real browser. sign up, tap a button, and it lands in your imessage or telegram. lowercase by design.",
+    "a real assistant with a real browser. it books, buys, digs through the web, and reports back, right in the chat you already use. lowercase by design.",
+  openGraph: {
+    title: "hermes, an assistant that lives in your chat",
+    description:
+      "a real assistant with a real browser. it books, buys, researches, and reports back in imessage or telegram.",
+    type: "website",
+  },
 };
 
 export default function RootLayout({
@@ -16,12 +29,24 @@ export default function RootLayout({
 }) {
   return (
     <ConvexAuthNextjsServerProvider>
-      <html lang="en" suppressHydrationWarning>
+      <html
+        lang="en"
+        suppressHydrationWarning
+        className={`${GeistSans.variable} ${GeistMono.variable}`}
+      >
         <body className="min-h-dvh bg-canvas text-ink antialiased">
-          {/* Skip link — first focusable element; jumps keyboard users past nav (item 6). */}
+          {/* no-js fallback: never leave reveal content hidden without JS */}
+          <noscript>
+            <style>{`.reveal{opacity:1 !important;transform:none !important}`}</style>
+          </noscript>
+          {/* Skip link — first focusable element; jumps keyboard users past nav. */}
           <a href="#main" className="sr-only skip-link">
             skip to main content
           </a>
+          {/* Fine grain over the whole page — fixed + pointer-events-none, cheap. */}
+          <div aria-hidden className="grain" />
+          {/* Reveals .reveal elements once as they scroll into view. */}
+          <RevealObserver />
           <ConvexClientProvider>{children}</ConvexClientProvider>
         </body>
       </html>
