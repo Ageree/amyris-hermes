@@ -24,7 +24,9 @@
 # =============================================================================
 
 substitutions:
-  _HERMES_REF: "main"
+  # Upstream NousResearch release tag baked into the image (Dockerfile default
+  # HERMES_GIT_URL now points at upstream). v2026.6.19 = Hermes Agent v0.17.0.
+  _HERMES_REF: "v2026.6.19"
   _INSTALL_HERMES: "1"
   _REGION: "us-central1"
   # The REAL Artifact Registry repo. Was a non-existent "hermes" repo (push 404).

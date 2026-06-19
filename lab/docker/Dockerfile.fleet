@@ -26,11 +26,14 @@
 # =============================================================================
 
 ARG INSTALL_HERMES=0
-ARG HERMES_REF=main
-# Hermes runtime source. Default = the PUBLIC Ageree fork (Cloud Build clones it
-# with no creds). Override via --build-arg HERMES_GIT_URL=... for a private fork
-# without editing this file.
-ARG HERMES_GIT_URL=https://github.com/Ageree/hermes-agent.git
+# Pin to an upstream RELEASE TAG (not a moving branch) so a rebuild is
+# reproducible. v2026.6.19 = Hermes Agent v0.17.0 ("The Reach Release").
+ARG HERMES_REF=v2026.6.19
+# Hermes runtime source. Default = upstream NousResearch (public, 197k★, Cloud
+# Build clones it with no creds). The old Ageree fork carried no real product
+# customizations (only railway cruft + auto-checkpoints), so we install straight
+# from upstream. Override via --build-arg HERMES_GIT_URL=... for a private fork.
+ARG HERMES_GIT_URL=https://github.com/NousResearch/hermes-agent.git
 
 # ---------------------------------------------------------------------------
 # Stage 1: base — system deps, tini, worker Python deps
