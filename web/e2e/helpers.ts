@@ -40,22 +40,17 @@ export async function signUpViaPassword(
   const card = page.getByTestId("signin-card");
   await expect(card).toBeVisible();
 
-  // The form starts in "sign in" flow. Flip to "sign up" — the toggle reads
-  // "new here? create an account" while in sign-in mode.
-  const toToSignUp = card.getByRole("button", {
-    name: /new here\?\s*create an account/i,
-  });
-  await expect(toToSignUp).toBeVisible();
-  await toToSignUp.click();
+  // The card starts in "sign in" flow. Flip to "sign up" via the explicit tab.
+  const toSignUp = card.getByTestId("tab-signup");
+  await expect(toSignUp).toBeVisible();
+  await toSignUp.click();
 
-  // The card holds THREE auth surfaces (google, an OTP form, and this password
-  // form). The OTP form also has an email input, so scope to the password form —
-  // the only one containing a type="password" field — to stay unambiguous.
+  // Email + password is now the only form on the card.
   const pwForm = card.locator('form:has(input[type="password"])');
   await expect(pwForm).toBeVisible();
 
-  // After flipping, the submit button label becomes "sign up".
-  const submit = pwForm.getByRole("button", { name: /^sign up$/i });
+  // In sign-up mode the submit button reads "create account".
+  const submit = pwForm.getByRole("button", { name: /^create account$/i });
   await expect(submit).toBeVisible();
 
   // Fill the credentials within the password form.

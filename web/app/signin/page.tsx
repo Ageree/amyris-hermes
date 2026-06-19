@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { SignInCard } from "@/components/auth/SignInCard";
 
 export const metadata: Metadata = {
-  title: "sign in · hermes",
+  title: "sign in or sign up · hermes",
 };
 
 export default function SignInPage() {
@@ -28,7 +28,7 @@ export default function SignInPage() {
           hermes
         </span>
         {/* h1 describes the page purpose; the wordmark above is visual decoration (item 4) */}
-        <h1 className="text-sm text-muted lowercase">sign in to your assistant</h1>
+        <h1 className="text-sm text-muted lowercase">sign in or sign up</h1>
       </div>
       <SignInCard />
     </main>
