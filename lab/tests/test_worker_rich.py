@@ -155,7 +155,7 @@ def test_from_env_photon_defaults_when_unset(monkeypatch):
 def test_provider_msg_id_extracts_photon_handle():
     assert _provider_msg_id("photon:abc123") == "abc123"
     assert _provider_msg_id("photon:") is None       # empty id
-    assert _provider_msg_id("sb-handle") is None      # non-photon
+    assert _provider_msg_id("sb-handle") == "sb-handle"  # bare = Sendblue GUID (tapback target)
     assert _provider_msg_id("") is None
     assert _provider_msg_id(None) is None
 
@@ -214,14 +214,26 @@ def test_rich_reply_fans_out_parts_in_order_with_reply_to():
     assert any("done" in body for _, body in rec.sends)
 
 
-def test_reply_to_none_for_non_photon_handle():
+def test_reply_to_is_bare_handle_for_sendblue():
+    # A bare (un-prefixed) handle IS a Sendblue message_handle (Apple GUID) and is
+    # the reaction target for /send-reaction — so it must flow through as reply_to.
     reply = "[[react:👍]]ok"
-    convex = _convex_for(_claim(handle="sb-xyz"))  # Sendblue-style handle
+    convex = _convex_for(_claim(handle="sb-xyz"))  # Sendblue-style bare handle
     rec = RichRecordingChannel()
     reg = ChannelRegistry({"imessage": rec})
     process_one(convex, reg, _cfg(), run_fn=MagicMock(return_value=reply))
     rt = next(rt for (_, p, rt) in rec.rich if isinstance(p, ReactionPart))
-    assert rt is None  # no targetable inbound id -> reaction degrades
+    assert rt == "sb-xyz"  # bare handle targets the Sendblue tapback
+
+
+def test_reply_to_none_for_empty_handle():
+    reply = "[[react:👍]]ok"
+    convex = _convex_for(_claim(handle=""))  # no inbound handle at all
+    rec = RichRecordingChannel()
+    reg = ChannelRegistry({"imessage": rec})
+    process_one(convex, reg, _cfg(), run_fn=MagicMock(return_value=reply))
+    rt = next(rt for (_, p, rt) in rec.rich if isinstance(p, ReactionPart))
+    assert rt is None  # nothing to target -> reaction degrades
 
 
 def test_poll_part_routes_through_send_rich():

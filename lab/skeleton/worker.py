@@ -696,9 +696,10 @@ def _provider_msg_id(handle: str) -> Optional[str]:
     "photon:<providerMessageId>" (no schema field needed — see convex
     messages.ts::enqueuePhotonInbound). Telegram encodes it as
     "tg:<update_id>:<message_id>" (http.ts Telegram inbound) — the message_id is
-    the reaction target (setMessageReaction). For a Sendblue handle (or a legacy
-    "tg:<update_id>" with no message id) there is no targetable inbound id here, so
-    reactions degrade (reply_to=None).
+    the reaction target (setMessageReaction). A BARE (un-prefixed) handle is a
+    Sendblue message_handle (Apple GUID) and IS the reaction target for
+    /send-reaction, so it flows through as-is. A legacy "tg:<update_id>" with no
+    message id, or an empty handle, has no targetable id -> None (reaction degrades).
     """
     h = handle or ""
     if h.startswith("photon:"):
@@ -707,7 +708,7 @@ def _provider_msg_id(handle: str) -> Optional[str]:
     if h.startswith("tg:"):
         parts = h.split(":")
         return parts[2] if len(parts) >= 3 and parts[2] else None
-    return None
+    return h or None  # bare handle = Sendblue Apple GUID (tapback target)
 
 
 def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str,

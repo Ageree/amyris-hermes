@@ -1,9 +1,16 @@
 """Thin Sendblue iMessage client (outbound send + inbound parsing).
 
 Throwaway spike for the Phase-1A walking skeleton — P1C supersedes it with the
-real TS/Convex router. Verified Sendblue facts (docs 2026-06-08):
+real TS/Convex router. Verified Sendblue facts (docs.sendblue.com, 2026-06-20):
   - Base https://api.sendblue.co/api ; auth headers sb-api-key-id / sb-api-secret-key
-  - Send: POST /send-message with JSON {number, from_number, content}
+  - Send: POST /send-message with JSON {number, from_number, content?, media_url?}.
+    `media_url` is a public http(s) URL — image/file attachment, OR a voice note
+    (Apple renders a native voice bubble only for .caf; other audio arrives as an
+    audio attachment). `content` is optional when `media_url` is present.
+  - Reaction (tapback): POST /send-reaction with JSON
+    {from_number, message_handle, reaction}. `reaction` ∈
+    love|like|dislike|laugh|emphasize|question; `message_handle` is the inbound
+    message's Apple GUID (from the inbound webhook). iMessage-only.
   - Typing indicator: POST /send-typing-indicator with JSON
     {from_number, number, state:"start"|"stop", max_duration_ms?}. iMessage-only;
     best-effort (a 200 "SENT" does NOT guarantee delivery if the chat is stale).
@@ -32,10 +39,23 @@ class SendblueClient:
         self._from = from_number
         self._timeout = timeout
 
-    def send_message(self, to_number: str, content: str) -> dict:
-        if not to_number or not content:
-            raise ValueError("to_number and content are required")
-        payload = {"number": to_number, "from_number": self._from, "content": content}
+    def send_message(
+        self, to_number: str, content: str = "", *, media_url: Optional[str] = None
+    ) -> dict:
+        """Send a text and/or a media attachment. At least one of content/media_url.
+
+        `media_url` (a public http(s) URL) delivers an image/file/voice attachment;
+        when present `content` may be empty (a media-only bubble, e.g. a voice note).
+        """
+        if not to_number:
+            raise ValueError("to_number is required")
+        if not content and not media_url:
+            raise ValueError("content or media_url is required")
+        payload = {"number": to_number, "from_number": self._from}
+        if content:
+            payload["content"] = content
+        if media_url:
+            payload["media_url"] = media_url
         r = requests.post(
             f"{SENDBLUE_BASE}/send-message",
             json=payload,
@@ -45,6 +65,32 @@ class SendblueClient:
         if not (200 <= r.status_code < 300):
             raise RuntimeError(
                 f"Sendblue send-message failed {r.status_code}: {r.text[:300]}"
+            )
+        return r.json()
+
+    def send_reaction(self, *, message_handle: str, reaction: str) -> dict:
+        """Send an iMessage tapback to a prior inbound message (by its Apple GUID).
+
+        `reaction` must be one of love|like|dislike|laugh|emphasize|question (the
+        fixed iMessage tapback set). Best-effort like every iMessage write — a
+        stale/too-old target may not accept it; callers treat failures as non-fatal.
+        """
+        if not message_handle or not reaction:
+            raise ValueError("message_handle and reaction are required")
+        payload = {
+            "from_number": self._from,
+            "message_handle": message_handle,
+            "reaction": reaction,
+        }
+        r = requests.post(
+            f"{SENDBLUE_BASE}/send-reaction",
+            json=payload,
+            headers=self._headers,
+            timeout=self._timeout,
+        )
+        if not (200 <= r.status_code < 300):
+            raise RuntimeError(
+                f"Sendblue send-reaction failed {r.status_code}: {r.text[:300]}"
             )
         return r.json()
 

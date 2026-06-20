@@ -56,9 +56,66 @@ def test_constructor_rejects_missing_credentials():
 
 def test_send_message_rejects_empty_args():
     client = SendblueClient(key_id="k", secret="s", from_number="+1")
-    for to_number, content in (("", "hi"), ("+1555", "")):
+    # missing to_number, OR no content AND no media_url -> ValueError
+    for kwargs in ({"to_number": "", "content": "hi"}, {"to_number": "+1555", "content": ""}):
         try:
-            client.send_message(to_number=to_number, content=content)
+            client.send_message(**kwargs)
+            assert False, "expected ValueError"
+        except ValueError:
+            pass
+
+
+def test_send_message_with_media_url_includes_it_in_body():
+    client = SendblueClient(key_id="kid", secret="sec", from_number="+15550001111")
+    with patch("sendblue_client.requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"status": "QUEUED"})
+        client.send_message(to_number="+1555", content="caption", media_url="https://x.io/a.png")
+    body = mock_post.call_args.kwargs["json"]
+    assert body["media_url"] == "https://x.io/a.png"
+    assert body["content"] == "caption"
+    assert body["number"] == "+1555" and body["from_number"] == "+15550001111"
+
+
+def test_send_message_media_only_omits_content_key():
+    # A media-only send (e.g. a voice note) needs no `content`.
+    client = SendblueClient(key_id="k", secret="s", from_number="+1")
+    with patch("sendblue_client.requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {})
+        client.send_message(to_number="+1555", media_url="https://x.io/clip.caf")
+    body = mock_post.call_args.kwargs["json"]
+    assert body["media_url"] == "https://x.io/clip.caf"
+    assert "content" not in body  # no empty content key on a media-only send
+
+
+def test_send_reaction_posts_expected_body_and_endpoint():
+    client = SendblueClient(key_id="kid", secret="sec", from_number="+15550001111")
+    with patch("sendblue_client.requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"status": "OK"})
+        resp = client.send_reaction(message_handle="GUID-123", reaction="love")
+    assert resp["status"] == "OK"
+    args, kwargs = mock_post.call_args
+    assert args[0] == "https://api.sendblue.co/api/send-reaction"
+    body = kwargs["json"]
+    assert body == {"from_number": "+15550001111", "message_handle": "GUID-123", "reaction": "love"}
+    assert kwargs["headers"]["sb-api-key-id"] == "kid"
+
+
+def test_send_reaction_raises_on_non_2xx():
+    client = SendblueClient(key_id="k", secret="s", from_number="+1")
+    with patch("sendblue_client.requests.post") as mock_post:
+        mock_post.return_value = MagicMock(status_code=422, text="bad reaction")
+        try:
+            client.send_reaction(message_handle="g", reaction="nope")
+            assert False, "expected error"
+        except RuntimeError as e:
+            assert "422" in str(e)
+
+
+def test_send_reaction_rejects_empty_args():
+    client = SendblueClient(key_id="k", secret="s", from_number="+1")
+    for kwargs in ({"message_handle": "", "reaction": "love"}, {"message_handle": "g", "reaction": ""}):
+        try:
+            client.send_reaction(**kwargs)
             assert False, "expected ValueError"
         except ValueError:
             pass
