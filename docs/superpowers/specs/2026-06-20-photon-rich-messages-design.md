@@ -145,6 +145,7 @@ RichPart = text(str)
   containers reply via the same sidecar loopback (host-internal) — confirmed in
   writing-plans.
 - Runtime needs **Node ≥18.17** (sidecar) alongside Python.
+- Sidecar host needs **ffmpeg** on PATH for non-m4a voice notes (mp3/wav → m4a/aac); m4a/aac inputs need none. (Fleet image ships it via `Dockerfile.fleet`.)
 
 ## Cutover & rollback
 

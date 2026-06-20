@@ -45,8 +45,11 @@ def _registry():
     tg_client = MagicMock()
     tg_client.send_message.return_value = {"ok": True, "result": {"message_id": 1}}
     sb_client = MagicMock()
+    # Pin classic mode: these tests assert the WORKER's render->split->send_message
+    # routing (HTML via sendMessage), which is orthogonal to the rich-markdown
+    # feature (covered in test_telegram_rich_markdown.py). worker.py is unchanged.
     reg = ChannelRegistry({
-        "telegram": TelegramChannel(tg_client),
+        "telegram": TelegramChannel(tg_client, rich_markdown=False),
         "imessage": SendblueChannel(sb_client),
     })
     return reg, tg_client, sb_client

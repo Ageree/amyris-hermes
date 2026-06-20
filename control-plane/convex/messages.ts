@@ -78,6 +78,64 @@ export const enqueue = internalMutation({
   handler: async (ctx, args) => enqueueImpl(ctx, args),
 });
 
+// ---------------------------------------------------------------------------
+// enqueuePhotonInbound — PUBLIC (worker-secret-gated) entry for the Photon
+// iMessage inbound consumer (lab/skeleton/photon_inbound.py). Photon inbound
+// arrives over the sidecar's gRPC stream, NOT an HTTP webhook, so the consumer
+// is a Python loop that calls THIS mutation over the public HTTP API (the same
+// transport convex_client.py uses) rather than a public Convex webhook route.
+//
+// It mirrors the http.ts /sendblue/inbound resolution: resolve the sender phone
+// → tenant via the VERIFIED channelBindings (A1), and enqueue with the row's OWN
+// userId/channel/replyTarget so claim + reply stay per-tenant (A2). Unknown
+// sender → returns {enqueued:false} (no insert, no budget burn) so the consumer
+// can log+skip. The provider message id is carried in `handle` ("photon:<id>"),
+// which is both the idempotency key (dedup via by_channel_handle) AND recoverable
+// later for reaction targeting — no schema change needed.
+//
+// Gated by WORKER_SECRET (A4), like every other brain-facing function — the
+// resolver itself is internal, so this is the only surface that turns a Photon
+// sender into an enqueued tenant row, and it never leaks binding existence beyond
+// the boolean a trusted worker already gets from the enqueue result.
+// ---------------------------------------------------------------------------
+export const enqueuePhotonInbound = mutation({
+  args: {
+    workerSecret: v.string(),
+    providerMessageId: v.string(),
+    address: v.string(),
+    text: v.string(),
+    mediaUrl: v.optional(v.string()),
+  },
+  returns: v.object({
+    enqueued: v.boolean(),
+    userId: v.union(v.id("users"), v.null()),
+  }),
+  handler: async (
+    ctx,
+    { workerSecret, providerMessageId, address, text, mediaUrl },
+  ): Promise<{ enqueued: boolean; userId: Id<"users"> | null }> => {
+    assertWorker(workerSecret);
+    // Annotate BOTH the handler return AND the runQuery result explicitly: `internal`
+    // transitively references THIS module, so inferring either is a self-referential
+    // cycle TS can't resolve (TS7022/TS7023). The shapes mirror the validators.
+    const resolved: { userId: Id<"users"> } | null = await ctx.runQuery(
+      internal.lib.identity.resolveUserByAddress,
+      { channel: "imessage", address },
+    );
+    if (!resolved) return { enqueued: false, userId: null }; // unknown sender → drop
+    await enqueueImpl(ctx, {
+      handle: `photon:${providerMessageId}`,
+      userId: resolved.userId,
+      channel: "imessage",
+      replyTarget: address,
+      userNumber: address,
+      text,
+      mediaUrl,
+    });
+    return { enqueued: true, userId: resolved.userId };
+  },
+});
+
 // Shared return shape for a claimed message. mediaUrl/channel/replyTarget/userId
 // are nullable because legacy rows predate them; the worker defaults channel ->
 // "imessage" and replyTarget -> userNumber (A2: reply by the message's OWN

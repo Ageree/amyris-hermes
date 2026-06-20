@@ -29,7 +29,7 @@ import shutil
 import signal
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional
 
 from convex_client import ConvexClient
@@ -39,6 +39,7 @@ from hermes_bridge import run_hermes
 # claimed message's own channel + address (multi-tenancy M2), replacing the single
 # hardcoded operator number.
 from channels import ChannelRegistry, SendblueChannel
+from channels.rich import TextPart, parse_rich
 
 # Fast lane is a SOFT dependency: a stale/partial deploy (worker.py updated but
 # fast_lane.py / bubbles.py not yet copied) must degrade to the unchanged
@@ -65,6 +66,15 @@ try:
     import fleet_client
 except Exception:  # pragma: no cover - exercised only on a broken deploy
     fleet_client = None
+
+# Photon inbound consumer (rich iMessage) is a SOFT dependency: the worker only
+# wires it when IMESSAGE_PROVIDER=photon, and a stale/partial deploy (worker.py
+# updated but photon_inbound.py not yet copied) must degrade to Sendblue rather
+# than crash-loop the always-on daemon at import time.
+try:
+    from photon_inbound import PhotonInboundConsumer
+except Exception:  # pragma: no cover - exercised only on a broken deploy
+    PhotonInboundConsumer = None
 
 # Multi-bubble splitting now lives in the Channel layer (SendblueChannel.split via
 # bubbles.split_into_bubbles); the worker no longer imports it directly. The typing
@@ -266,6 +276,18 @@ class WorkerConfig:
     # Flip HEARTBEAT_ENABLED=0 to disable without restarting (useful during tests /
     # a partial deploy where fleet_client is not yet available).
     heartbeat_enabled: bool = True
+    # iMessage transport selection (Photon rich messages). IMESSAGE_PROVIDER picks
+    # the iMessage channel: "sendblue" (default, the kill-switch) or "photon" (rich:
+    # attachments/voice/reactions via the loopback sidecar). ChannelRegistry.from_config
+    # reads these by these exact names; if "photon" is chosen but creds/base are
+    # missing it falls back to Sendblue (never an empty iMessage slot). Photon creds
+    # come from the env, NEVER literals.
+    imessage_provider: str = "sendblue"
+    photon_sidecar_base: str = "http://127.0.0.1:8790"
+    photon_bearer: str = ""
+    photon_sidecar_dir: str = "/Users/saveliy/Documents/Amyris/lab/photon-sidecar"
+    photon_project_id: str = ""
+    photon_project_secret: str = ""
 
     @classmethod
     def from_env(cls) -> "WorkerConfig":
@@ -330,6 +352,15 @@ class WorkerConfig:
             ),
             instance_id=os.environ.get("INSTANCE_ID", ""),
             heartbeat_enabled=_env_flag("HEARTBEAT_ENABLED", True),
+            # iMessage transport (Photon rich messages). Creds from the env only.
+            imessage_provider=os.environ.get("IMESSAGE_PROVIDER", "sendblue"),
+            photon_sidecar_base=os.environ.get("PHOTON_SIDECAR_BASE", "http://127.0.0.1:8790"),
+            photon_bearer=os.environ.get("PHOTON_SIDECAR_BEARER", ""),
+            photon_sidecar_dir=os.environ.get(
+                "PHOTON_SIDECAR_DIR", "/Users/saveliy/Documents/Amyris/lab/photon-sidecar"
+            ),
+            photon_project_id=os.environ.get("PHOTON_PROJECT_ID", ""),
+            photon_project_secret=os.environ.get("PHOTON_PROJECT_SECRET", ""),
         )
 
 
@@ -458,6 +489,33 @@ class _NullTyping:
 
 _NULL_TYPING = _NullTyping()
 
+# Channels whose sidecar we've already ensured this process, so ensure_sidecar runs
+# at most once per channel instance (its own /healthz probe is idempotent, but a
+# WeakSet skips even that on the hot path). ponytail: a process-global set, fine for
+# the singleton sidecar topology (one PhotonChannel per project); the ceiling is
+# "multiple distinct PhotonChannel instances" — each is ensured once independently.
+import weakref as _weakref
+_SIDECAR_READY: "_weakref.WeakSet" = _weakref.WeakSet()
+
+
+def _ensure_photon_sidecar(channel: Any) -> None:
+    """Lazily start the Photon sidecar for an active PhotonChannel, once.
+
+    No-op for any channel without ensure_sidecar (Sendblue/Telegram/test fakes).
+    Best-effort: ensure_sidecar already swallows its own errors and returns a bool;
+    we never let a sidecar-startup hiccup raise into the reply path (a failed start
+    surfaces as a send failure, logged + best-effort, exactly like any provider
+    outage). Idempotent: subsequent calls for the same channel return immediately.
+    """
+    ensure = getattr(channel, "ensure_sidecar", None)
+    if ensure is None or channel in _SIDECAR_READY:
+        return
+    try:
+        if ensure():
+            _SIDECAR_READY.add(channel)
+    except Exception:  # pragma: no cover - ensure_sidecar is already fail-soft
+        log.warning("photon ensure_sidecar raised (will retry next turn)", exc_info=True)
+
 
 def _make_typing(channel: Any, cfg: WorkerConfig, target: str):
     """Build + start a TypingKeepalive over a Channel, or a no-op when disabled.
@@ -545,6 +603,10 @@ class _BubbleEmitter:
 
     def stream_sink(self, bubble: str) -> None:
         """on_bubble sink for the streaming fast lane — render + send now, no pacing."""
+        # SP3: rich directives are intentionally NOT parsed on the streamed path —
+        # only the non-streaming (_complete_then_send -> send_reply) and Hermes lanes
+        # run parse_rich. The fast lane's SOUL note (P5) must avoid emitting rich
+        # directives in streamed fast replies, since they'd be sent verbatim here.
         self._send(self._render(bubble), pace=False)
 
     def send_text(self, text: str) -> int:
@@ -558,6 +620,51 @@ class _BubbleEmitter:
             chunks = [rendered.strip()]
         for c in (chunks or [rendered.strip()]):
             self._send(c, pace=True)
+        return self.count
+
+    def send_reply(self, reply: str, *, reply_to: Optional[str] = None) -> int:
+        """Send a brain reply, applying the rich-message contract (channels/rich.py).
+
+        Parse the flat reply into ordered parts. The common case — a reply with no
+        rich directives — parses to a single TextPart, so it takes the EXACT
+        send_text() path (byte-identical to the pre-rich behavior; every existing
+        text test stays green and fast-lane/Hermes plain replies are unchanged).
+
+        For a reply with directives, each part is delivered in order: a TextPart
+        goes through the same render -> split -> send_message path, any other kind
+        (image/file/voice/reaction/poll) is delegated to channel.send_rich, which
+        each channel handles or degrades gracefully. Every send is BEST-EFFORT — a
+        failed part is logged and the loop continues; rich delivery NEVER raises and
+        NEVER breaks the reply.
+
+        `reply_to` is the user's most-recent inbound provider message id (for
+        Reaction parts and anything that anchors to a message); None when unknown.
+        """
+        parts = parse_rich(reply)
+        # Fast path: no rich directives (or empty) -> identical to send_text.
+        if len(parts) <= 1 and (not parts or isinstance(parts[0], TextPart)):
+            return self.send_text(parts[0].text if parts else reply)
+        for part in parts:
+            if isinstance(part, TextPart):
+                self.send_text(part.text)
+                continue
+            try:
+                res = self._channel.send_rich(self._target, part, reply_to=reply_to)
+                if not getattr(res, "ok", True):
+                    log.info(
+                        "rich part %s not delivered to %s: %s",
+                        type(part).__name__, self._target, getattr(res, "error", None),
+                    )
+                elif self.first_at is None:
+                    self.first_at = time.monotonic()
+            except Exception:  # a Channel impl should swallow; never trust it
+                log.exception(
+                    "channel send_rich failed (%s) for %s",
+                    type(part).__name__, self._target,
+                )
+            self.count += 1
+            if self._typing is not None:
+                self._typing.poke()
         return self.count
 
 
@@ -582,12 +689,36 @@ def _safe_fast_reply(text: str, cfg: WorkerConfig, history: Optional[list], mid:
         return None
 
 
-def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str, emitter: "_BubbleEmitter") -> bool:
-    """Non-streaming completion guard: complete in Convex, THEN send the bubbles.
+def _provider_msg_id(handle: str) -> Optional[str]:
+    """Recover the inbound provider message id for reaction targeting.
+
+    The Photon inbound consumer encodes it in the claim handle as
+    "photon:<providerMessageId>" (no schema field needed — see convex
+    messages.ts::enqueuePhotonInbound). Telegram encodes it as
+    "tg:<update_id>:<message_id>" (http.ts Telegram inbound) — the message_id is
+    the reaction target (setMessageReaction). For a Sendblue handle (or a legacy
+    "tg:<update_id>" with no message id) there is no targetable inbound id here, so
+    reactions degrade (reply_to=None).
+    """
+    h = handle or ""
+    if h.startswith("photon:"):
+        pid = h[len("photon:"):].strip()
+        return pid or None
+    if h.startswith("tg:"):
+        parts = h.split(":")
+        return parts[2] if len(parts) >= 3 and parts[2] else None
+    return None
+
+
+def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str,
+                        emitter: "_BubbleEmitter", *, reply_to: Optional[str] = None) -> bool:
+    """Non-streaming completion guard: complete in Convex, THEN send the reply.
 
     A transient Convex `complete` failure degrades to `messages:fail` (terminal
     state, no stranded "processing" row) + a friendly ERROR reply — exactly the
-    pre-streaming semantics. Returns True (the message is handled).
+    pre-streaming semantics. The reply is sent rich-aware (send_reply): a plain-text
+    reply is byte-identical to the old send_text path; rich parts route per channel.
+    Returns True (the message is handled).
     """
     try:
         convex.mutation(
@@ -605,7 +736,7 @@ def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str, em
             log.exception("fail mutation also failed for %s", mid)
         emitter.send_text(ERROR_REPLY)
         return True
-    emitter.send_text(reply)
+    emitter.send_reply(reply, reply_to=reply_to)
     return True
 
 
@@ -747,6 +878,10 @@ def process_one(
     started = time.monotonic()
     lane = "hermes"  # updated to "fastlane" if the fast lane answers
     history: list = []
+    # Reaction targeting: the user's most-recent inbound provider message id. The
+    # Photon inbound consumer carries it in the claim handle ("photon:<id>"); other
+    # channels have no targetable id here, so reactions degrade gracefully (None).
+    reply_to = _provider_msg_id(claimed.get("handle") or "")
 
     try:
         channel = registry.get(channel_kind)
@@ -765,6 +900,12 @@ def process_one(
         except Exception:
             log.exception("fail mutation also failed for %s", mid)
         return True
+
+    # Photon: ensure the loopback sidecar is up before the first send (lazy, once).
+    # No-op for Sendblue/Telegram/test fakes. The sidecar IS the reply transport for
+    # Photon, so this is on the reply path by necessity (not cosmetic); it is gated
+    # by _healthy() so a warm sidecar costs one /healthz probe at most once.
+    _ensure_photon_sidecar(channel)
 
     # --- Quota gate (M5, design §6) -------------------------------------------
     # A real tenant turn is METERED: reserve one unit BEFORE any model call.
@@ -818,7 +959,7 @@ def process_one(
                     full = None
                 if full is not None:
                     reply, lane = full, "fastlane"
-                    completed = _complete_then_send(convex, cfg, mid, full, emitter)
+                    completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
             elif _use_streaming(cfg, channel_kind):
                 # Production streaming: bubbles are sent AS generated; complete
                 # AFTER (the user already has the answer).
@@ -835,14 +976,14 @@ def process_one(
                     full = _safe_fast_reply(text, cfg, history, mid)
                     if full is not None:
                         reply, lane = full, "fastlane"
-                        completed = _complete_then_send(convex, cfg, mid, full, emitter)
+                        completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
                 # else: deferred -> Hermes
             else:
                 # streaming disabled/unavailable: non-streaming fast lane + batch send.
                 full = _safe_fast_reply(text, cfg, history, mid)
                 if full is not None:
                     reply, lane = full, "fastlane"
-                    completed = _complete_then_send(convex, cfg, mid, full, emitter)
+                    completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
 
         if not completed:
             # --- Heavy lane: full Hermes ---------------------------------------
@@ -859,7 +1000,7 @@ def process_one(
                     "messages:complete",
                     {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
                 )
-                emitter.send_text(reply or ERROR_REPLY)
+                emitter.send_reply(reply or ERROR_REPLY, reply_to=reply_to)
             except Exception as e:  # per-message failure must not kill the loop
                 log.exception("hermes failed for message %s", mid)
                 reply = ERROR_REPLY
@@ -1089,6 +1230,71 @@ def seed_browser_harness(hermes_home: str) -> bool:
         return False
 
 
+def _bootstrap_photon_inbound(cfg: WorkerConfig, *, convex: Optional[Any] = None) -> WorkerConfig:
+    """Wire the Photon inbound consumer (W1) + enforce the bearer precondition (W4).
+
+    Photon inbound flows over the loopback sidecar's /inbound stream, NOT an HTTP
+    webhook, so SOMETHING in-process must consume it — otherwise no iMessage ever
+    arrives via Photon. When IMESSAGE_PROVIDER=photon:
+
+      W4: a missing PHOTON_SIDECAR_TOKEN (cfg.photon_bearer) would make the sidecar
+          exit(2) on launch. Rather than spawn a doomed sidecar, log FATAL and fall
+          back to Sendblue (the kill-switch) for THIS run — return a cfg with the
+          effective provider flipped to "sendblue".
+
+      W1: with a bearer present, (a) build the imessage PhotonChannel via the
+          registry and ensure its sidecar ONCE (brings up the loopback /inbound),
+          and (b) start a daemon thread running PhotonInboundConsumer.run_forever.
+          The consumer's url/token are derived from the SAME cfg fields the channel
+          uses (cfg.photon_sidecar_base / cfg.photon_bearer) — a single source, so
+          there is no second literal and no 8789/8790 port divergence.
+
+    Returns the EFFECTIVE cfg (unchanged for non-photon / valid-photon; flipped to
+    Sendblue for the W4 fallback). FAIL-SOFT: any hiccup logs and degrades; it must
+    NEVER block run_loop or crash the daemon.
+    """
+    if cfg.imessage_provider != "photon":
+        return cfg
+
+    if not cfg.photon_bearer:
+        log.critical(
+            "FATAL: IMESSAGE_PROVIDER=photon but PHOTON_SIDECAR_BEARER is unset — the "
+            "sidecar would exit(2) on the missing token. Falling back to Sendblue for "
+            "this run. Set PHOTON_SIDECAR_BEARER to enable Photon rich iMessage."
+        )
+        return replace(cfg, imessage_provider="sendblue")
+
+    try:
+        convex = convex or ConvexClient(cfg.convex_url)
+        # (a) Build the imessage channel via the registry and ensure the sidecar once
+        #     so the loopback /inbound stream is up before the consumer connects.
+        registry = ChannelRegistry.from_config(cfg)
+        try:
+            channel = registry.get("imessage")
+            _ensure_photon_sidecar(channel)
+        except KeyError:
+            log.warning("photon inbound: no imessage channel built; skipping consumer")
+            return cfg
+        # (b) Construct + start the consumer on a daemon thread. url/token come from
+        #     the SAME cfg fields the channel uses (single source — no port drift).
+        if PhotonInboundConsumer is None:
+            log.warning("photon inbound: PhotonInboundConsumer unavailable; skipping")
+            return cfg
+        consumer = PhotonInboundConsumer(
+            convex,
+            cfg.worker_secret,
+            sidecar_url=cfg.photon_sidecar_base,
+            sidecar_token=cfg.photon_bearer,
+        )
+        threading.Thread(
+            target=consumer.run_forever, name="photon-inbound", daemon=True
+        ).start()
+        log.info("photon inbound consumer started (sidecar %s)", cfg.photon_sidecar_base)
+    except Exception:  # FAIL-SOFT: a hiccup must never block run_loop
+        log.exception("photon inbound bootstrap failed (degraded — no rich inbound)")
+    return cfg
+
+
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
@@ -1098,6 +1304,10 @@ def main() -> None:
     # Graceful shutdown (Bug H3): catch docker stop's SIGTERM (and Ctrl-C) so an
     # in-flight turn finishes instead of being SIGKILLed. Fail-soft.
     _install_signal_handlers()
+    # Photon rich iMessage (W1/W4): wire the inbound consumer + enforce the bearer
+    # precondition. Returns the EFFECTIVE cfg (flipped to Sendblue if the bearer is
+    # missing) so run_loop below builds the right outbound registry.
+    cfg = _bootstrap_photon_inbound(cfg)
     if cfg.fast_lane_enabled and cfg.minimax_api_key and not _fast_lane_model_ok(cfg):
         log.warning(
             "fast lane model %r does not honor thinking-disabled (only MiniMax-M3 "

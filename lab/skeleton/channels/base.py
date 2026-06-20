@@ -53,6 +53,29 @@ class Channel(Protocol):
         self, address: str, *, state: str = "start", max_duration_ms: Optional[int] = None
     ) -> OutboundResult: ...
 
+    def send_rich(
+        self, address: str, part, *, reply_to: Optional[str] = None
+    ) -> OutboundResult:
+        """Send ONE RichPart (channels/rich.py) to `address`, best-effort.
+
+        Each channel handles every RichPart kind; an UNSUPPORTED kind DEGRADES
+        gracefully and NEVER raises (it returns OutboundResult, ok possibly
+        False/logged), so a rich reply can always fall back to plain delivery:
+
+          * iMessage (Photon): Text -> /send ; Image/File/Voice -> /send-attachment ;
+            Reaction -> /react (target = `reply_to` provider msg id; if None,
+            log + skip with ok=False) ; Poll -> degrade to a numbered text list
+            via /send.
+          * Telegram: Text -> sendMessage(HTML) ; Image -> sendPhoto ;
+            File -> sendDocument ; Voice -> sendVoice ;
+            Reaction -> setMessageReaction (reply_to = message_id) ;
+            Poll -> sendPoll (NATIVE).
+
+        `reply_to` is the provider message id of the user's most-recent inbound,
+        used by Reaction parts (and any channel that anchors a part to a message).
+        """
+        ...
+
     def split(self, text: str) -> list: ...
 
     def render(self, text: str) -> str: ...
@@ -92,15 +115,47 @@ class ChannelRegistry:
     def from_config(cls, cfg) -> "ChannelRegistry":
         """Build the channels whose credentials are present in `cfg`.
 
-        iMessage (Sendblue) when the key/secret/from are set; Telegram when a bot
-        token is set. A worker with only Sendblue creds gets an iMessage-only
-        registry — get("telegram") then raises, which is correct (it can't serve
-        Telegram rows). Imports are lazy to avoid a hard dependency on the Telegram
-        client when only iMessage is configured.
+        iMessage transport is chosen by IMESSAGE_PROVIDER (cfg.imessage_provider,
+        default "sendblue" — Sendblue stays the kill-switch). When provider=="photon"
+        AND the Photon sidecar config + creds are present, build a PhotonChannel;
+        otherwise fall through to the Sendblue branch (so a misconfigured "photon"
+        request degrades to the known-good Sendblue path rather than yielding NO
+        iMessage channel — get("imessage") would then raise and strand replies).
+        Telegram when a bot token is set. A worker with only Sendblue creds gets an
+        iMessage-only registry — get("telegram") then raises, which is correct (it
+        can't serve Telegram rows). Imports are lazy to avoid a hard dependency on a
+        transport's client when that transport isn't configured.
+
+        New cfg fields are read via getattr(cfg, name, default) so this works
+        whether or not WorkerConfig yet carries them (the integration agent adds
+        imessage_provider / photon_* by these exact names).
         """
         channels: dict = {}
 
-        if cfg.sendblue_key_id and cfg.sendblue_secret and cfg.sendblue_from:
+        imessage_built = False
+        provider = (getattr(cfg, "imessage_provider", "") or "sendblue").lower()
+        photon_base = getattr(cfg, "photon_sidecar_base", "") or ""
+        photon_pid = getattr(cfg, "photon_project_id", "") or ""
+        photon_secret = getattr(cfg, "photon_project_secret", "") or ""
+
+        if provider == "photon" and photon_base and photon_pid and photon_secret:
+            from channels.photon_channel import PhotonChannel
+
+            channels["imessage"] = PhotonChannel(
+                sidecar_base=photon_base,
+                bearer=getattr(cfg, "photon_bearer", "") or "",
+                sidecar_dir=getattr(cfg, "photon_sidecar_dir", None) or None,
+                project_id=photon_pid,
+                project_secret=photon_secret,
+            )
+            imessage_built = True
+
+        if (
+            not imessage_built
+            and cfg.sendblue_key_id
+            and cfg.sendblue_secret
+            and cfg.sendblue_from
+        ):
             from sendblue_client import SendblueClient
             from channels.sendblue_channel import SendblueChannel
 

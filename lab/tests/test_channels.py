@@ -137,26 +137,28 @@ def test_sendblue_send_typing_swallows_error():
 
 # ---- TelegramChannel (adapter; tg_format/client tested in their own files) ----
 
+# These adapter tests assert the CLASSIC (HTML+sendMessage) path, so pin
+# rich_markdown=False; the rich-markdown path is covered in test_telegram_rich_markdown.py.
 def test_telegram_render_delegates_to_render_html():
-    assert TelegramChannel(MagicMock()).render("**b** _i_ `c`") == "<b>b</b> <i>i</i> <code>c</code>"
+    assert TelegramChannel(MagicMock(), rich_markdown=False).render("**b** _i_ `c`") == "<b>b</b> <i>i</i> <code>c</code>"
 
 
 def test_telegram_split_returns_chunks_under_cap():
-    out = TelegramChannel(MagicMock()).split("y" * 9000)
+    out = TelegramChannel(MagicMock(), rich_markdown=False).split("y" * 9000)
     assert len(out) >= 3
 
 
 def test_telegram_send_message_forwards_address_and_body():
     client = MagicMock()
     client.send_message.return_value = {"result": {"message_id": 77}}
-    res = TelegramChannel(client).send_message("555", "<b>hi</b>")
+    res = TelegramChannel(client, rich_markdown=False).send_message("555", "<b>hi</b>")
     assert client.send_message.call_args.args == ("555", "<b>hi</b>")
     assert res.ok is True and res.provider_id == "77"
 
 
 def test_telegram_send_message_empty_not_sent():
     client = MagicMock()
-    res = TelegramChannel(client).send_message("555", "   ")
+    res = TelegramChannel(client, rich_markdown=False).send_message("555", "   ")
     assert res.ok is False
     client.send_message.assert_not_called()
 
@@ -164,7 +166,7 @@ def test_telegram_send_message_empty_not_sent():
 def test_telegram_send_message_swallows_error():
     client = MagicMock()
     client.send_message.side_effect = RuntimeError("tg 400")
-    assert TelegramChannel(client).send_message("555", "hi").ok is False
+    assert TelegramChannel(client, rich_markdown=False).send_message("555", "hi").ok is False
 
 
 def test_telegram_typing_start_fires_chat_action_stop_is_noop():

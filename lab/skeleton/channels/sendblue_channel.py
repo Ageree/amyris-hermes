@@ -14,6 +14,7 @@ from typing import Optional
 
 from bubbles import split_into_bubbles
 from channels.base import OutboundResult
+from channels.rich import FilePart, ImagePart, PollPart, TextPart, VoicePart
 
 log = logging.getLogger("worker.channels.imessage")
 
@@ -61,3 +62,37 @@ class SendblueChannel:
         except Exception as e:  # cosmetic — never let typing break the reply
             log.debug("sendblue typing %s failed for %s: %s", state, address, e)
             return OutboundResult(ok=False, error=str(e)[:200])
+
+    def send_rich(self, address: str, part, *, reply_to: Optional[str] = None) -> OutboundResult:
+        """Send one RichPart over Sendblue, degrading gracefully (never raises).
+
+        Sendblue is the iMessage KILL-SWITCH transport — it has no attachment /
+        voice / reaction API wired here, so only text-shaped parts can be
+        delivered. Per the channel contract, every kind degrades best-effort
+        (never raises) so a rich reply still falls back to plain delivery:
+
+          * TextPart -> send_message (the normal path).
+          * PollPart -> degrade to a numbered text list via send_message (same as
+            Photon's iMessage poll degradation — iMessage has no native poll).
+          * Image/File/Voice -> degrade to TEXT: send the .src URL via
+            send_message so iMessage auto-unfurls it. Dropping it (the old
+            ok=False no-op) was a regression vs the pre-rich plain-text send,
+            since parse_rich turns a bare image URL into an ImagePart.
+          * Reaction -> logged no-op, ok=False (Sendblue has no tapback API).
+
+        For full iMessage rich messaging, set IMESSAGE_PROVIDER=photon (PhotonChannel).
+        """
+        if isinstance(part, TextPart):
+            return self.send_message(address, part.text)
+        if isinstance(part, PollPart):
+            lines = [part.question]
+            lines.extend(f"{i}. {opt}" for i, opt in enumerate(part.options, 1))
+            return self.send_message(address, "\n".join(lines))
+        if isinstance(part, (ImagePart, FilePart, VoicePart)):
+            src = (part.src or "").strip()
+            if not src:
+                return OutboundResult(ok=False, error="empty src")
+            return self.send_message(address, src)
+        kind = type(part).__name__
+        log.info("sendblue send_rich: %s unsupported (iMessage kill-switch path)", kind)
+        return OutboundResult(ok=False, error=f"unsupported on sendblue: {kind}")

@@ -163,7 +163,10 @@ http.route({
 
     const replyTarget = String(chatId);
     const userNumber = String(fromId);
-    const handle = `tg:${update?.update_id ?? ""}`;
+    // Carry the message_id so the worker can target reactions back at this inbound
+    // (worker._provider_msg_id parses "tg:<update_id>:<message_id>"). update_id stays
+    // FIRST so the by_channel_handle idempotency key stays unique per update.
+    const handle = `tg:${update?.update_id ?? ""}:${msg?.message_id ?? ""}`;
 
     // /start <token> -> redeem the pairing token (onboard this chat).
     const start = text.match(/^\/start\s+([A-Za-z0-9_-]{1,64})$/);

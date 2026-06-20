@@ -103,6 +103,9 @@ ARG HERMES_GIT_URL
 RUN apt-get update && apt-get install -y --no-install-recommends \
         chromium \
         chromium-driver \
+        # ffmpeg: Photon sidecar (co-located with the worker) transcodes non-m4a
+        # voice notes (mp3/wav) to m4a/aac for iMessage; m4a/aac inputs need none.
+        ffmpeg \
         fonts-liberation \
         libglib2.0-0 \
         libnss3 \
