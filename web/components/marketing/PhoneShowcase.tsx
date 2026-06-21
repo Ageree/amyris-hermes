@@ -143,16 +143,19 @@ function HerBubble({ children }: { children: React.ReactNode }) {
   );
 }
 
-function WorkingChip({ label }: { label: string }) {
+// "dhizume is typing" — the classic three-bounce telegram indicator in her grey
+// bubble, with a faint caption of what she's actually doing (browsing/applying).
+function TypingIndicator({ label }: { label: string }) {
   return (
-    <div className="msg-in flex justify-start">
-      <div className="inline-flex items-center gap-2 rounded-full border border-border bg-surface-2 px-3 py-1.5">
-        <span className="font-mono text-[11px] text-faint">{label}</span>
-        <span className="flex items-center gap-0.5" aria-hidden>
-          <span className="typing-dot h-1 w-1 rounded-full bg-lime" style={{ animationDelay: "0ms" }} />
-          <span className="typing-dot h-1 w-1 rounded-full bg-lime" style={{ animationDelay: "180ms" }} />
-          <span className="typing-dot h-1 w-1 rounded-full bg-lime" style={{ animationDelay: "360ms" }} />
-        </span>
+    <div className="msg-in flex flex-col items-start gap-1">
+      <span className="px-1 font-mono text-[10px] text-faint">{label}</span>
+      <div
+        className="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-border bg-surface-2 px-4 py-3"
+        aria-label="dhizume is typing"
+      >
+        <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" style={{ animationDelay: "0ms" }} />
+        <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" style={{ animationDelay: "160ms" }} />
+        <span className="typing-dot h-1.5 w-1.5 rounded-full bg-muted" style={{ animationDelay: "320ms" }} />
       </div>
     </div>
   );
@@ -212,8 +215,8 @@ function Phone() {
             <div key={idx} className="flex flex-col gap-2.5">
               {/* step 0+: the request */}
               <UserBubble text={s.user} />
-              {/* step 1: she works */}
-              {step === 1 && <WorkingChip label={s.work} />}
+              {/* step 1: she's typing / doing the work */}
+              {step === 1 && <TypingIndicator label={s.work} />}
               {/* step 2+: her reply */}
               {step >= 2 && <HerBubble>{s.reply}</HerBubble>}
               {/* step 3: the artifact */}

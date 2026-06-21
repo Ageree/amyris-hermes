@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { SCENARIOS, advance, stepDelay, FINAL_STEP } from "./phoneScenarios.ts";
 
 const N = SCENARIOS.length;
-assert.equal(N, 10, "expected 10 scenarios");
+assert.equal(N, 11, "expected 11 scenarios");
 
 // every scenario is well-formed
 for (const s of SCENARIOS) {

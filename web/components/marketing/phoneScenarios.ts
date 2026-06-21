@@ -26,16 +26,22 @@ export const SCENARIOS: Scenario[] = [
     rich: { kind: "file", name: "thesis_ai_jobs.docx", meta: "61 pages · 1.2 mb" },
   },
   {
-    user: "find me a senior product role and apply on linkedin for me",
+    user: "write a full scientific report on crispr gene editing, with citations",
+    work: "reading · 31 papers",
+    reply: "done. abstract, methods, results, and 31 references in ieee style.",
+    rich: { kind: "file", name: "crispr_report.pdf", meta: "19 pages · 31 refs" },
+  },
+  {
+    user: "i want a new job — find roles, rewrite my résumé, and apply for me",
     work: "applying · linkedin",
-    reply: "applied to 7 roles that fit. tuned your résumé for each.",
+    reply: "tailored your résumé to each posting and applied to 9 roles. i'll track the replies.",
     rich: {
       kind: "checklist",
       items: [
-        { text: "stripe — applied", done: true },
-        { text: "notion — applied", done: true },
-        { text: "linear — applied", done: true },
-        { text: "+ 4 more · résumé_v3.pdf attached", done: true },
+        { text: "stripe — applied, résumé tuned", done: true },
+        { text: "notion — applied, résumé tuned", done: true },
+        { text: "linear — applied, résumé tuned", done: true },
+        { text: "+ 6 more · résumé_v3.pdf attached", done: true },
       ],
     },
   },
