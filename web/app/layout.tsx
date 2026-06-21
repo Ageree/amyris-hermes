@@ -4,6 +4,7 @@ import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import { ConvexClientProvider } from "@/components/ConvexClientProvider";
 import { RevealObserver } from "@/components/RevealObserver";
+import { VideoBackground } from "@/components/marketing/VideoBackground";
 import "./globals.css";
 
 // Geist, self-hosted via the `geist` package — no Google Fonts fetch at build or
@@ -45,8 +46,8 @@ export default function RootLayout({
           <a href="#main" className="sr-only skip-link">
             skip to main content
           </a>
-          {/* Pulsing, drifting rose/violet fog behind all content — sets the mood. */}
-          <div aria-hidden className="fog" />
+          {/* Looping dhizume-on-her-throne video behind all content — sets the mood. */}
+          <VideoBackground />
           {/* Fine grain over the whole page — fixed + pointer-events-none, cheap. */}
           <div aria-hidden className="grain" />
           {/* Reveals .reveal elements once as they scroll into view. */}

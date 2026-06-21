@@ -110,45 +110,52 @@
 }
 
 /* ---------------------------------------------------------------------------
-   Fog. A brand-tinted (rose + violet) haze drifting behind ALL content — sets
-   the gothic-romantic mood. Two layers breathe + drift on different cycles so it
-   reads as living, pulsing fog. GPU-cheap (transform + opacity only). Sits at
-   z -2 (over the canvas, behind content). Reduced-motion → static soft haze.
+   Video background. A looping clip of dhizume on her throne in the moonlit hall,
+   fixed behind ALL content (z -2, over the canvas). Each clip is a boomerang
+   (forward then reverse) for a seamless loop. A dark scrim over it preserves
+   text contrast. Reduced-motion → the static poster image shows instead.
 --------------------------------------------------------------------------- */
-.fog {
+.video-bg {
   position: fixed;
-  inset: -25%;
+  inset: 0;
   z-index: -2;
+  overflow: hidden;
   pointer-events: none;
-  background:
-    radial-gradient(42% 38% at 22% 28%, color-mix(in oklab, var(--color-lime) 16%, transparent), transparent 70%),
-    radial-gradient(48% 44% at 82% 22%, color-mix(in oklab, #7d54d4 20%, transparent), transparent 72%),
-    radial-gradient(52% 48% at 65% 82%, color-mix(in oklab, var(--color-lime-deep) 14%, transparent), transparent 70%),
-    radial-gradient(40% 38% at 12% 78%, color-mix(in oklab, #6b54c4 16%, transparent), transparent 72%);
-  filter: blur(70px);
-  opacity: 0.6;
+  background: var(--color-canvas) center / cover no-repeat;
 }
-.fog::after {
-  content: "";
+.video-bg-media {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+/* scrim: keep foreground text readable over the moving image */
+.video-bg-scrim {
   position: absolute;
   inset: 0;
   background:
-    radial-gradient(38% 36% at 70% 55%, color-mix(in oklab, var(--color-lime) 12%, transparent), transparent 70%),
-    radial-gradient(44% 40% at 30% 48%, color-mix(in oklab, #7d54d4 16%, transparent), transparent 72%);
-  filter: blur(60px);
-  opacity: 0.7;
+    linear-gradient(
+      to bottom,
+      rgba(10, 8, 16, 0.7),
+      rgba(10, 8, 16, 0.58) 42%,
+      rgba(10, 8, 16, 0.8)
+    ),
+    radial-gradient(120% 75% at 50% 0%, transparent, rgba(10, 8, 16, 0.5));
 }
-@media (prefers-reduced-motion: no-preference) {
-  .fog { animation: fog-pulse 13s ease-in-out infinite; }
-  .fog::after { animation: fog-drift 21s ease-in-out infinite alternate; }
+/* reduced-motion: drop the video, fall back to the static poster frame */
+@media (prefers-reduced-motion: reduce) {
+  .video-bg {
+    background-image: url("/dhizume/bg-desktop.jpg");
+  }
+  .video-bg-media {
+    display: none;
+  }
 }
-@keyframes fog-pulse {
-  0%, 100% { opacity: 0.45; transform: scale(1); }
-  50% { opacity: 0.85; transform: scale(1.1); }
-}
-@keyframes fog-drift {
-  from { transform: translate3d(-4%, 3%, 0) scale(1); opacity: 0.45; }
-  to { transform: translate3d(5%, -4%, 0) scale(1.14); opacity: 0.8; }
+@media (prefers-reduced-motion: reduce) and (max-width: 639px) {
+  .video-bg {
+    background-image: url("/dhizume/bg-mobile.jpg");
+  }
 }
 
 /* a hairline grid backdrop, faded with a mask (organizes the hero's negative space) */
