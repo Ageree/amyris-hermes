@@ -30,18 +30,12 @@ export function DashboardShell() {
           dashboard loaded
         </div>
 
-        <section className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3">
-          {/* tier + usage stack on the left; connections take the right column on
-              wide screens, full width when stacked. */}
-          <div className="flex flex-col gap-4 lg:col-span-2">
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <TierCard />
-              <UsagePanel />
-            </div>
-          </div>
-          <div className="lg:col-span-1">
-            <ConnectionsPanel />
-          </div>
+        {/* three equal, equal-height cards: symmetric 1→2→3 columns, items-stretch
+            so plan/usage/channels share one height. */}
+        <section className="mt-8 grid grid-cols-1 items-stretch gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <TierCard />
+          <UsagePanel />
+          <ConnectionsPanel />
         </section>
       </Authenticated>
     </main>
@@ -100,16 +94,12 @@ function DashboardSkeleton() {
   // aria-hidden: pure visual skeleton, never perceived (item 13)
   return (
     <section
-      className="mt-8 grid grid-cols-1 gap-4 lg:grid-cols-3"
+      className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"
       aria-hidden="true"
     >
-      <div className="flex flex-col gap-4 lg:col-span-2">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <div className="h-44 rounded-[var(--radius)] border border-border bg-surface" />
-          <div className="h-44 rounded-[var(--radius)] border border-border bg-surface" />
-        </div>
-      </div>
-      <div className="h-64 rounded-[var(--radius)] border border-border bg-surface lg:col-span-1" />
+      <div className="h-56 rounded-[var(--radius-lg)] border border-border bg-surface" />
+      <div className="h-56 rounded-[var(--radius-lg)] border border-border bg-surface" />
+      <div className="h-56 rounded-[var(--radius-lg)] border border-border bg-surface" />
     </section>
   );
 }

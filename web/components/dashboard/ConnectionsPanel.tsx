@@ -4,7 +4,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@cp/api";
-import { Card, CardTitle, CardDescription } from "@/components/ui/card";
+import { StatCard, ChannelsIcon } from "@/components/dashboard/StatCard";
 import { Button } from "@/components/ui/button";
 import { StatusDot } from "@/components/ui/badge";
 
@@ -19,15 +19,6 @@ interface ChannelRow {
   verified: boolean;
 }
 
-// keep only the last 4 of a phone / chat-id; mask the rest. telegram chat-ids and
-// imessage numbers are both opaque-ish strings, so a uniform tail mask reads well.
-function maskAddress(address: string): string {
-  const trimmed = address.trim();
-  if (trimmed.length <= 4) return trimmed;
-  const tail = trimmed.slice(-4);
-  return `••• ${tail}`;
-}
-
 function channelLabel(kind: Channel): string {
   return kind === "imessage" ? "imessage" : "telegram";
 }
@@ -36,50 +27,46 @@ export function ConnectionsPanel() {
   const channels = useQuery(api.app.channels.myChannels);
 
   return (
-    <Card className="rise" data-testid="connections-panel">
-      <div className="flex items-baseline justify-between gap-3">
-        <div>
-          <CardTitle as="h2">channels</CardTitle>
-          <CardDescription className="mt-1">
-            where your assistant reaches you
-          </CardDescription>
-        </div>
-        {channels !== undefined && channels.length > 0 && (
+    <StatCard
+      icon={<ChannelsIcon />}
+      title="channels"
+      subtitle="where your assistant reaches you"
+      headerRight={
+        channels !== undefined && channels.length > 0 ? (
           <Link
             href="/connect?step=channel"
-            className="shrink-0 text-xs text-muted underline-offset-4 transition-colors hover:text-lime hover:underline"
+            className="text-xs text-muted underline-offset-4 transition-colors hover:text-lime hover:underline"
           >
             connect another
           </Link>
-        )}
-      </div>
-
-      <div className="mt-5">
-        {channels === undefined ? (
-          <>
-            {/* Polite announcement while list loads (item 13). */}
-            <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
-              loading channels…
-            </div>
-            {/* Visual skeleton — aria-hidden so it's never perceived (item 13). */}
-            <LoadingRows />
-          </>
-        ) : channels.length === 0 ? (
-          <EmptyState />
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {channels.map((c: ChannelRow) => (
-              <ConnectionRow
-                key={`${c.kind}:${c.address}`}
-                kind={c.kind}
-                address={c.address}
-                verified={c.verified}
-              />
-            ))}
-          </ul>
-        )}
-      </div>
-    </Card>
+        ) : undefined
+      }
+      data-testid="connections-panel"
+    >
+      {channels === undefined ? (
+        <>
+          {/* Polite announcement while list loads (item 13). */}
+          <div role="status" aria-live="polite" aria-atomic="true" className="sr-only">
+            loading channels…
+          </div>
+          {/* Visual skeleton — aria-hidden so it's never perceived (item 13). */}
+          <LoadingRows />
+        </>
+      ) : channels.length === 0 ? (
+        <EmptyState />
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {channels.map((c: ChannelRow) => (
+            <ConnectionRow
+              key={`${c.kind}:${c.address}`}
+              kind={c.kind}
+              address={c.address}
+              verified={c.verified}
+            />
+          ))}
+        </ul>
+      )}
+    </StatCard>
   );
 }
 
@@ -98,7 +85,7 @@ function LoadingRows() {
 
 function EmptyState() {
   return (
-    <div className="flex flex-col items-start gap-4 rounded-[var(--radius)] border border-dashed border-border bg-surface-2/40 px-4 py-6">
+    <div className="flex h-full flex-col items-start justify-center gap-4 rounded-[var(--radius)] border border-dashed border-border bg-surface-2/40 px-4 py-6">
       <p className="text-sm text-muted">
         no channels yet. connect imessage or telegram to start chatting.
       </p>

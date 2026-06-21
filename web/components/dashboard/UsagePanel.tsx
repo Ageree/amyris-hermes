@@ -2,7 +2,7 @@
 
 import { useQuery } from "convex/react";
 import { api } from "@cp/api";
-import { Card, CardTitle, CardDescription } from "@/components/ui/card";
+import { StatCard, UsageIcon } from "@/components/dashboard/StatCard";
 import { cn } from "@/lib/utils";
 
 // "Jun 30" style date for the period-end label.
@@ -17,33 +17,31 @@ export function UsagePanel() {
   const usage = useQuery(api.app.usage.myUsage);
 
   return (
-    <Card className="rise" data-testid="usage-panel">
-      <CardTitle as="h2">usage</CardTitle>
-      <CardDescription className="mt-1">
-        messages this period
-      </CardDescription>
-
-      <div className="mt-5">
-        {usage === undefined ? (
-          // loading skeleton — aria-hidden; polite region in DashboardShell announces loading (item 13)
-          <div className="space-y-3" aria-hidden="true">
-            <div className="h-2 w-full rounded-full bg-surface-2" />
-            <div className="h-4 w-24 rounded bg-surface-2" />
-          </div>
-        ) : usage === null ? (
-          <p className="text-sm text-faint">no plan yet — pick a tier to begin.</p>
-        ) : usage.unlimited ? (
-          <UnlimitedMeter periodEnd={usage.periodEnd} />
-        ) : (
-          <QuotaMeter
-            msgUsed={usage.msgUsed}
-            msgQuota={usage.msgQuota}
-            remaining={usage.remaining}
-            periodEnd={usage.periodEnd}
-          />
-        )}
-      </div>
-    </Card>
+    <StatCard
+      icon={<UsageIcon />}
+      title="usage"
+      subtitle="messages this period"
+      data-testid="usage-panel"
+    >
+      {usage === undefined ? (
+        // loading skeleton — aria-hidden; polite region in DashboardShell announces loading (item 13)
+        <div className="space-y-3" aria-hidden="true">
+          <div className="h-2 w-full rounded-full bg-surface-2" />
+          <div className="h-4 w-24 rounded bg-surface-2" />
+        </div>
+      ) : usage === null ? (
+        <p className="text-sm text-faint">no plan yet — pick a tier to begin.</p>
+      ) : usage.unlimited ? (
+        <UnlimitedMeter periodEnd={usage.periodEnd} />
+      ) : (
+        <QuotaMeter
+          msgUsed={usage.msgUsed}
+          msgQuota={usage.msgQuota}
+          remaining={usage.remaining}
+          periodEnd={usage.periodEnd}
+        />
+      )}
+    </StatCard>
   );
 }
 

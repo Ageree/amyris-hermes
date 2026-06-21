@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery, useAction } from "convex/react";
 import { api } from "@cp/api";
-import { Card, CardTitle, CardDescription } from "@/components/ui/card";
+import { StatCard, PlanIcon } from "@/components/dashboard/StatCard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { TIERS, type TierName } from "@/lib/tiers";
@@ -36,10 +36,9 @@ export function TierCard() {
   // wait for the user before deciding what to show.
   if (user === undefined) {
     return (
-      <Card className="rise" data-testid="tier-card">
-        <CardTitle as="h2">plan</CardTitle>
-        <div className="mt-4 h-8 w-28 animate-pulse rounded bg-surface-2" />
-      </Card>
+      <StatCard icon={<PlanIcon />} title="plan" data-testid="tier-card">
+        <div className="h-8 w-28 animate-pulse rounded bg-surface-2" />
+      </StatCard>
     );
   }
 
@@ -68,26 +67,28 @@ export function TierCard() {
   }
 
   return (
-    <Card className="rise" data-testid="tier-card">
-      <div className="flex items-baseline justify-between gap-3">
-        <CardTitle as="h2">plan</CardTitle>
-        {isOperator ? (
-          <Badge tone="lime">max · unlimited</Badge>
-        ) : (
-          <Badge tone="lime">{currentTier}</Badge>
-        )}
-      </div>
-
-      <CardDescription className="mt-2">
-        {isOperator
+    <StatCard
+      icon={<PlanIcon />}
+      title="plan"
+      headerRight={
+        <Badge tone="lime">{isOperator ? "max · unlimited" : currentTier}</Badge>
+      }
+      subtitle={
+        isOperator
           ? "operator — every channel, no limits."
           : spec
             ? `${spec.msgQuota.toLocaleString()} messages / month. ${spec.blurb}`
-            : "your current plan."}
-      </CardDescription>
-
-      {/* upgrades — operators have nothing above them. */}
-      {!isOperator && (
+            : "your current plan."
+      }
+      data-testid="tier-card"
+    >
+      {/* upgrades — operators have nothing above them, so show a quiet note
+          instead of an empty body. */}
+      {isOperator ? (
+        <p className="text-xs text-faint">
+          everything's unlocked — no limits, every channel.
+        </p>
+      ) : (
         <UpgradeOptions
           targets={higherTiers(currentTier)}
           pending={pending}
@@ -103,7 +104,7 @@ export function TierCard() {
           {banner} <span aria-hidden="true">👋</span>
         </p>
       )}
-    </Card>
+    </StatCard>
   );
 }
 
@@ -118,14 +119,14 @@ function UpgradeOptions({
 }) {
   if (targets.length === 0) {
     return (
-      <p className="mt-5 text-xs text-faint">
+      <p className="text-xs text-faint">
         you're on the top plan. nothing to upgrade.
       </p>
     );
   }
 
   return (
-    <div className="mt-5 flex flex-col gap-2">
+    <div className="flex flex-col gap-2">
       {targets.map((tier) => {
         const spec = tierSpec(tier);
         if (!spec) return null;
