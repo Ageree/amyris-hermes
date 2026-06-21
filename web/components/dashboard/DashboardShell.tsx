@@ -62,7 +62,12 @@ function TopBar() {
       </div>
 
       <div className="flex items-center gap-3">
-        <UserEmail />
+        {/* currentUser is an auth-gated query (it throws when unauthenticated).
+            Only mount it while authenticated so signing out unmounts it cleanly
+            instead of firing an uncaught "unauthenticated" error mid-transition. */}
+        <Authenticated>
+          <UserEmail />
+        </Authenticated>
         <SignOutButton />
       </div>
     </header>

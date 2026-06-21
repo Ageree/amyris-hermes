@@ -53,7 +53,9 @@ export function SignInCard() {
     setPwPending(true);
     try {
       await signIn("password", { email, password, flow });
-      router.push("/connect");
+      // new users go to the pairing wizard to connect a channel first; returning
+      // users land straight on their dashboard.
+      router.push(flow === "signUp" ? "/connect" : "/dashboard");
     } catch (err) {
       const fallback =
         flow === "signUp"
