@@ -206,6 +206,14 @@
 }
 .typing-dot { animation: typing 1.2s ease-in-out infinite; }
 
+/* chat message entrance — each bubble/card rises as the showcase reveals it.
+   reduced-motion is covered by the global collapse rule below. */
+@keyframes msg-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.97); }
+  to { opacity: 1; transform: none; }
+}
+.msg-in { animation: msg-in 0.42s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
 /* marquee: motivated use — a breadth-heavy strip of example prompts that don't
    need individual attention. Animation ONLY under no-preference; the track is
    also overflow-x scrollable so reduced-motion users can browse it by hand. */

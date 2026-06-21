@@ -1,28 +1,19 @@
 import { Nav } from "@/components/marketing/Nav";
-import { Hero } from "@/components/marketing/Hero";
-import { Capabilities } from "@/components/marketing/Capabilities";
-import { HowItWorks } from "@/components/marketing/HowItWorks";
-import { Showcase } from "@/components/marketing/Showcase";
+import { PhoneShowcase } from "@/components/marketing/PhoneShowcase";
 import { TierGrid } from "@/components/marketing/TierGrid";
 import { Faq } from "@/components/marketing/Faq";
 import { CtaBand } from "@/components/marketing/CtaBand";
 import { Footer } from "@/components/marketing/Footer";
 
-// Public marketing landing — no auth. All sections are server components; the
-// only interactivity is plain navigation + native <details> in the FAQ. Section
-// order intentionally varies layout family (split → bento → flow → marquee →
-// grid → accordion → band) so no two adjacent sections read the same.
+// Public marketing landing — no auth. The fold is the product itself: a living
+// telegram thread (PhoneShowcase) where dhizume takes real tasks and texts back
+// real artifacts, floating over the throne-room video. Then pricing → faq → cta.
 export default function Home() {
   return (
     <div className="relative flex min-h-dvh flex-col">
       <Nav />
       <main id="main" className="flex-1">
-        {/* the fold is the wallpaper: the dhizume video fills the screen, with a
-            short line + get-started CTA sitting low over it; content on scroll */}
-        <Hero />
-        <Capabilities />
-        <HowItWorks />
-        <Showcase />
+        <PhoneShowcase />
         <TierGrid />
         <Faq />
         <CtaBand />
