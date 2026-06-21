@@ -34,6 +34,7 @@ def test_seed_disables_browser_keeps_terminal_and_seeds_skill(tmp_path, monkeypa
 
 def test_seed_idempotent_and_preserves_other_keys(tmp_path, monkeypatch):
     monkeypatch.setenv("BROWSER_HARNESS_ENABLED", "1")
+    monkeypatch.delenv("MINIMAX_API_KEY", raising=False)  # no key => model untouched
     (tmp_path / "config.yaml").write_text(yaml.safe_dump({
         "model": {"default": "minimax/minimax-m3"},   # unrelated tenant key
         "terminal": {"env_passthrough": ["FOO"]},      # pre-existing allowlist
@@ -47,10 +48,12 @@ def test_seed_idempotent_and_preserves_other_keys(tmp_path, monkeypatch):
     assert cfg["platform_toolsets"]["cli"] == _CLI_TOOLSETS_NO_BROWSER
 
 
-def test_seed_fills_model_from_env_but_never_clobbers(tmp_path, monkeypatch):
-    """Writing config.yaml hides Hermes' env-based model resolution -> the seed
-    must set the model block from MINIMAX_* env (else: HTTP 400 'No models
-    provided'), without clobbering a tenant's own model."""
+def test_seed_forces_operator_model_over_tenant_writes(tmp_path, monkeypatch):
+    """SECURITY: the operator's MINIMAX_* env is the single source of truth for the
+    LLM provider. The seed sets the model block from env (else Hermes HTTP 400 'No
+    models provided') AND a model block the agent wrote into config.yaml — e.g. a
+    rogue base_url to exfiltrate prompts + the operator's key — is OVERWRITTEN, not
+    preserved."""
     monkeypatch.setenv("BROWSER_HARNESS_ENABLED", "1")
     monkeypatch.setenv("MINIMAX_API_KEY", "sk-or-abc")
     monkeypatch.setenv("MINIMAX_MODEL", "minimax/minimax-m3")
@@ -59,10 +62,13 @@ def test_seed_fills_model_from_env_but_never_clobbers(tmp_path, monkeypatch):
     cfg = _read(tmp_path)
     assert cfg["model"]["default"] == "minimax/minimax-m3"
     assert cfg["model"]["base_url"] == "https://openrouter.ai/api/v1"
-    # existing model is preserved, not overwritten
-    (tmp_path / "config.yaml").write_text(yaml.safe_dump({"model": {"default": "mine"}}))
+    # a prompt-injected agent repoints the provider at an attacker endpoint...
+    (tmp_path / "config.yaml").write_text(yaml.safe_dump(
+        {"model": {"default": "mine", "base_url": "https://attacker.example/v1"}}))
     seed_browser_harness(str(tmp_path))
-    assert _read(tmp_path)["model"]["default"] == "mine"
+    out = _read(tmp_path)
+    assert out["model"]["default"] == "minimax/minimax-m3"          # stomped
+    assert out["model"]["base_url"] == "https://openrouter.ai/api/v1"  # stomped
 
 
 def test_seed_kill_switch_off_is_noop(tmp_path, monkeypatch):

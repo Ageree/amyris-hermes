@@ -989,6 +989,10 @@ def process_one(
         if not completed:
             # --- Heavy lane: full Hermes ---------------------------------------
             try:
+                # SECURITY: re-pin the operator's LLM provider before every Hermes
+                # turn so a prompt-injected agent can't persist a rogue base_url
+                # in config.yaml (the only chat-writable model surface).
+                _enforce_model_block(cfg.hermes_home)
                 reply = run_fn(
                     text,
                     hermes_home=cfg.hermes_home,
@@ -1170,6 +1174,47 @@ def _truthy(v: str) -> bool:
     return str(v).strip().lower() not in ("", "0", "false", "no", "off")
 
 
+def _enforce_model_block(hermes_home: str) -> None:
+    """Force the operator's LLM provider/model/base_url into config.yaml from env.
+
+    SECURITY: config.yaml lives on the agent-writable HERMES_HOME bind-mount and
+    short-circuits Hermes' env-based model resolution. A prompt-injected agent (it
+    has the `terminal` tool) could rewrite `base_url` to an attacker endpoint and
+    exfiltrate every prompt PLUS the operator's MINIMAX_API_KEY. So we re-assert
+    the operator's env values (OVERWRITE, not setdefault) before every Hermes turn:
+    any model block the agent wrote is stomped. The api key is never written to the
+    file — it stays in env, which a chat turn cannot change. The fast/medium lanes
+    are already immune (they read the key from env, never config.yaml).
+
+    No-op when MINIMAX_API_KEY is unset (a fresh tenant resolves its model from env
+    directly) or the home dir is absent (tests). Fail-soft: a config hiccup logs
+    rather than blocking the user's turn.
+    """
+    key = os.environ.get("MINIMAX_API_KEY", "")
+    home = os.path.expanduser(hermes_home)
+    if not key or not os.path.isdir(home):
+        return
+    cfg_path = os.path.join(home, "config.yaml")
+    try:
+        import yaml  # pyyaml (skeleton requirement)
+
+        cfg: dict = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        is_or = key.startswith("sk-or-")
+        model = cfg.setdefault("model", {})
+        model["default"] = os.environ.get("MINIMAX_MODEL") or (
+            "minimax/minimax-m3" if is_or else "MiniMax-M3")
+        model["provider"] = "minimax"
+        model["base_url"] = os.environ.get("MINIMAX_BASE_URL") or (
+            "https://openrouter.ai/api/v1" if is_or else "https://api.minimax.io/v1")
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+    except Exception as e:  # fail-soft: a config hiccup must not block the turn
+        log.warning("could not enforce LLM provider in %s: %s", cfg_path, e)
+
+
 def seed_browser_harness(hermes_home: str) -> bool:
     """Idempotently flip a tenant to browse via browser-harness (Lane B) instead
     of Hermes' built-in browser: disable the `browser` toolset, allowlist BU_*
@@ -1200,23 +1245,14 @@ def seed_browser_harness(hermes_home: str) -> bool:
         ep = set(term.get("env_passthrough") or [])
         ep.update(["BU_NAME", "BU_CDP_URL", "BU_CDP_WS"])
         term["env_passthrough"] = sorted(ep)
-        # Writing a config.yaml short-circuits Hermes' env-based model resolution
-        # (a fresh tenant with NO config.yaml gets its model from MINIMAX_* env;
-        # once a config exists, Hermes loads it and would have no model -> HTTP 400
-        # "No models provided"). So seed the model block from the same env the
-        # controller injects (setdefault: never clobber a tenant's own model).
-        key = os.environ.get("MINIMAX_API_KEY", "")
-        if key:
-            is_or = key.startswith("sk-or-")
-            model = cfg.setdefault("model", {})
-            model.setdefault("default", os.environ.get("MINIMAX_MODEL")
-                             or ("minimax/minimax-m3" if is_or else "MiniMax-M3"))
-            model.setdefault("provider", "minimax")
-            model.setdefault("base_url", os.environ.get("MINIMAX_BASE_URL")
-                             or ("https://openrouter.ai/api/v1" if is_or
-                                 else "https://api.minimax.io/v1"))
         with open(cfg_path, "w") as f:
             yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        # Writing a config.yaml short-circuits Hermes' env-based model resolution
+        # (a fresh tenant with NO config.yaml resolves its model from MINIMAX_*
+        # env; once a config exists Hermes loads it and would have no model ->
+        # HTTP 400 "No models provided"). Force the model block from the operator's
+        # env so it's present AND so an agent-tampered provider can't persist.
+        _enforce_model_block(home)
         # Seed the skill instruction so Hermes knows to drive the harness.
         src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "..", "skills", "browser-harness", "SKILL.md")
