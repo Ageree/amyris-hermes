@@ -46,7 +46,7 @@ export function ConnectionsPanel() {
         </div>
         {channels !== undefined && channels.length > 0 && (
           <Link
-            href="/connect"
+            href="/connect?step=channel"
             className="shrink-0 text-xs text-muted underline-offset-4 transition-colors hover:text-lime hover:underline"
           >
             connect another
@@ -105,7 +105,7 @@ function EmptyState() {
       {/* a Link styled as the primary button (Button is a native <button>, so we
           can't nest a Link inside it for correct navigation semantics). */}
       <Link
-        href="/connect"
+        href="/connect?step=channel"
         className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-3 text-sm font-medium text-canvas shadow-[0_0_0_1px_rgba(226,90,130,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
       >
         connect a channel

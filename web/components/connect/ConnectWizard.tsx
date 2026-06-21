@@ -50,8 +50,15 @@ function StepDots({ step }: { step: Step }) {
   );
 }
 
-export function ConnectWizard() {
-  const [step, setStep] = useState<Step>("tier");
+// initialStep lets the dashboard skip onboarding: a user who already picked a
+// plan lands straight on "channel" (via /connect?step=channel), while the signup
+// flow still enters at "tier".
+export function ConnectWizard({
+  initialStep = "tier",
+}: {
+  initialStep?: "tier" | "channel";
+} = {}) {
+  const [step, setStep] = useState<Step>(initialStep);
   const [channel, setChannel] = useState<Channel | null>(null);
   const [minted, setMinted] = useState<Minted | null>(null);
   const [tierMessage, setTierMessage] = useState<string | null>(null);
