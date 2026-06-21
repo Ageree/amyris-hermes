@@ -250,7 +250,7 @@ export function PhoneShowcase() {
   return (
     <section
       id="how"
-      className="relative flex min-h-[calc(100dvh-4rem)] items-center px-6 py-16"
+      className="relative flex min-h-dvh items-center px-6 py-16"
     >
       <div className="mx-auto grid w-full max-w-6xl items-center gap-12 lg:grid-cols-[1fr_minmax(0,420px)] lg:gap-16">
         {/* copy */}
