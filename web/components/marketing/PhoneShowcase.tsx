@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -282,9 +283,21 @@ export function PhoneShowcase() {
           </p>
         </div>
 
-        {/* the living phone */}
-        <div className="order-1 flex justify-center lg:order-2 lg:justify-end">
-          <Phone />
+        {/* the living phone — dhizume stands beside it (desktop), presenting the
+            thread; her lower body fades into the dark so she reads as a figure,
+            not a pasted cutout. hidden on mobile so the phone stays the hero. */}
+        <div className="relative order-1 flex items-end justify-center lg:order-2 lg:justify-end">
+          <Image
+            src="/dhizume/figure.png"
+            alt="dhizume"
+            width={437}
+            height={1100}
+            priority
+            className="pointer-events-none absolute bottom-0 left-0 z-0 hidden h-[118%] w-auto max-w-none -translate-x-[42%] select-none object-contain opacity-95 drop-shadow-[0_24px_48px_rgba(0,0,0,0.65)] [mask-image:linear-gradient(to_bottom,black_62%,transparent)] lg:block"
+          />
+          <div className="relative z-10">
+            <Phone />
+          </div>
         </div>
       </div>
     </section>

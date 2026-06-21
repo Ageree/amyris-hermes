@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "./Wordmark";
 
@@ -12,10 +13,12 @@ import { Wordmark } from "./Wordmark";
 // The fold is the living phone over the throne video — keep it chrome-free: the
 // bar is HIDDEN at the very top and slides in once you scroll past ~60% of the
 // first screen, then hides again on the way back up. Reduced-motion just snaps.
+// Each link wears one of dhizume's generated poses as its icon — the menu
+// carries the mascot, not just text.
 const SECTIONS = [
-  { href: "#how", label: "how it works" },
-  { href: "#pricing", label: "pricing" },
-  { href: "#faq", label: "faq" },
+  { href: "#how", label: "how it works", icon: "/dhizume/icons/wave.png" },
+  { href: "#pricing", label: "pricing", icon: "/dhizume/icons/point.png" },
+  { href: "#faq", label: "faq", icon: "/dhizume/icons/think.png" },
 ];
 
 export function Nav() {
@@ -42,8 +45,15 @@ export function Nav() {
             <a
               key={s.href}
               href={s.href}
-              className="text-sm text-muted transition-colors hover:text-ink"
+              className="group/link inline-flex items-center gap-2 text-sm text-muted transition-colors hover:text-ink"
             >
+              <Image
+                src={s.icon}
+                alt=""
+                width={22}
+                height={22}
+                className="h-5 w-5 rounded-full object-cover ring-1 ring-border-strong grayscale transition group-hover/link:grayscale-0 group-hover/link:ring-lime/50"
+              />
               {s.label}
             </a>
           ))}
