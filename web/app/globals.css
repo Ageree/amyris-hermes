@@ -1,37 +1,43 @@
 @import "tailwindcss";
 
 /* ===========================================================================
-   hermes — design system v2: "a calm, living terminal"
+   dhizume — design system v3: "a masked muse in the dark"
 
-   Redesign read: dark-tech consumer AI product (an assistant that lives in
-   imessage & telegram and drives a REAL browser). Brand-locked: near-black
-   canvas, ONE signal-lime accent, lowercase voice. Overhauled: type system
-   (Geist), a deeper surface/border ladder, motivated motion (scroll-driven
-   reveals, ambient lime glow, fine grain), and tactile interactive states.
+   Redesign read: gothic-romantic consumer AI product (an assistant that lives
+   in imessage & telegram and drives a REAL browser), fronted by the dhizume
+   mascot. Brand-locked: blue-violet near-black canvas, ONE deep-rose accent,
+   lowercase voice. Carried over: Geist type, surface/border ladder, motivated
+   motion (scroll-driven reveals, ambient rose glow, fine grain), tactile states.
 
    Tailwind v4 CSS-first theme — tokens below become utilities
    (bg-canvas, text-lime, border-border, …). Lowercase voice is content, not CSS.
+
+   NOTE: the accent token is still named `--color-lime` (and dim/deep siblings)
+   on purpose — 21 files use `text-lime`/`bg-lime` utilities, so recoloring the
+   VALUE here re-skins the whole app from one place. The name is historical; the
+   value is deep rose. Same trick as `--color-border` below.
 =========================================================================== */
 @theme {
-  /* surface ladder — off-black, never pure #000 */
-  --color-canvas: #08090a;
-  --color-surface: #101114;
-  --color-surface-2: #17191d;
-  --color-surface-3: #1f2228;
+  /* surface ladder — off-black with a faint blue-violet tint, never pure #000 */
+  --color-canvas: #0a0810;
+  --color-surface: #131019;
+  --color-surface-2: #1a1622;
+  --color-surface-3: #221d2c;
   /* kept as `border` (not renamed) so existing border-border/bg-border utilities
      across the dashboard + connect wizard keep working untouched */
-  --color-border: #262a31;
-  --color-border-strong: #343943;
+  --color-border: #2c2636;
+  --color-border-strong: #3b3447;
 
   /* ink ladder — off-white, never pure #fff */
-  --color-ink: #f3f4f6;
-  --color-muted: #a6a9b3;
-  --color-faint: #71757f;
+  --color-ink: #f3f1f6;
+  --color-muted: #aaa4b6;
+  --color-faint: #797385;
 
-  /* the one accent — signal lime (live pulse + primary actions) */
-  --color-lime: #c6f24e;
-  --color-lime-dim: #a9d63f;
-  --color-lime-deep: #8bb52f;
+  /* the one accent — deep rose / wine (live pulse + primary actions).
+     token name is legacy `lime`; value is rose (see header note). */
+  --color-lime: #e25a82;
+  --color-lime-dim: #c4426a;
+  --color-lime-deep: #a23355;
   --color-danger: #ff7a7a;
 
   /* type — Geist (self-hosted via the geist package; deploy-safe, no network) */
@@ -101,6 +107,48 @@
     radial-gradient(40% 50% at 70% 30%, color-mix(in oklab, var(--color-lime) 22%, transparent), transparent 70%),
     radial-gradient(35% 45% at 25% 70%, color-mix(in oklab, var(--color-lime-deep) 14%, transparent), transparent 70%);
   filter: blur(40px);
+}
+
+/* ---------------------------------------------------------------------------
+   Fog. A brand-tinted (rose + violet) haze drifting behind ALL content — sets
+   the gothic-romantic mood. Two layers breathe + drift on different cycles so it
+   reads as living, pulsing fog. GPU-cheap (transform + opacity only). Sits at
+   z -2 (over the canvas, behind content). Reduced-motion → static soft haze.
+--------------------------------------------------------------------------- */
+.fog {
+  position: fixed;
+  inset: -25%;
+  z-index: -2;
+  pointer-events: none;
+  background:
+    radial-gradient(42% 38% at 22% 28%, color-mix(in oklab, var(--color-lime) 16%, transparent), transparent 70%),
+    radial-gradient(48% 44% at 82% 22%, color-mix(in oklab, #7d54d4 20%, transparent), transparent 72%),
+    radial-gradient(52% 48% at 65% 82%, color-mix(in oklab, var(--color-lime-deep) 14%, transparent), transparent 70%),
+    radial-gradient(40% 38% at 12% 78%, color-mix(in oklab, #6b54c4 16%, transparent), transparent 72%);
+  filter: blur(70px);
+  opacity: 0.6;
+}
+.fog::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(38% 36% at 70% 55%, color-mix(in oklab, var(--color-lime) 12%, transparent), transparent 70%),
+    radial-gradient(44% 40% at 30% 48%, color-mix(in oklab, #7d54d4 16%, transparent), transparent 72%);
+  filter: blur(60px);
+  opacity: 0.7;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .fog { animation: fog-pulse 13s ease-in-out infinite; }
+  .fog::after { animation: fog-drift 21s ease-in-out infinite alternate; }
+}
+@keyframes fog-pulse {
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(1.1); }
+}
+@keyframes fog-drift {
+  from { transform: translate3d(-4%, 3%, 0) scale(1); opacity: 0.45; }
+  to { transform: translate3d(5%, -4%, 0) scale(1.14); opacity: 0.8; }
 }
 
 /* a hairline grid backdrop, faded with a mask (organizes the hero's negative space) */

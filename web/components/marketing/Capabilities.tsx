@@ -54,14 +54,14 @@ export function Capabilities() {
           most assistants can only talk. this one acts.
         </h2>
         <p className="mt-4 text-lg leading-relaxed text-muted">
-          hermes drives a real browser the way you do. it logs in, clicks, fills
+          dhizume drives a real browser the way you do. it logs in, clicks, fills
           forms, and reads what is actually on the page.
         </p>
       </div>
 
       <div className="mt-12 grid gap-4 lg:grid-cols-3">
         {/* wide hero tile — gradient + a mono url motif (visual variation) */}
-        <div className="reveal relative flex flex-col justify-between overflow-hidden rounded-[var(--radius-lg)] border border-lime/25 bg-[linear-gradient(150deg,rgba(198,242,78,0.12),transparent_55%)] p-7 lg:col-span-2 lg:row-span-1">
+        <div className="reveal relative flex flex-col justify-between overflow-hidden rounded-[var(--radius-lg)] border border-lime/25 bg-[linear-gradient(150deg,rgba(226,90,130,0.12),transparent_55%)] p-7 lg:col-span-2 lg:row-span-1">
           <div className="absolute inset-x-0 bottom-0 h-px bg-gradient-to-r from-transparent via-lime/40 to-transparent" />
           <div className="max-w-md">
             <h3 className="text-2xl font-semibold tracking-tight text-ink sm:text-3xl">

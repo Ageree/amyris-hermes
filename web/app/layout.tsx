@@ -11,14 +11,16 @@ import "./globals.css";
 // --font-sans / --font-mono tokens in globals.css (@theme).
 export const metadata: Metadata = {
   metadataBase: new URL("https://hermes-fleet-web.vercel.app"),
-  title: "hermes, an assistant that lives in imessage & telegram",
+  title: "dhizume, an assistant that lives in imessage & telegram",
   description:
-    "a real assistant with a real browser. it books, buys, digs through the web, and reports back, right in the chat you already use. lowercase by design.",
+    "meet dhizume: a real assistant with a real browser. she books, buys, digs through the web, and reports back, right in the chat you already use. lowercase by design.",
+  icons: { icon: "/dhizume/avatar.png" },
   openGraph: {
-    title: "hermes, an assistant that lives in your chat",
+    title: "dhizume, an assistant that lives in your chat",
     description:
-      "a real assistant with a real browser. it books, buys, researches, and reports back in imessage or telegram.",
+      "a real assistant with a real browser. she books, buys, researches, and reports back in imessage or telegram.",
     type: "website",
+    images: ["/dhizume/og.png"],
   },
 };
 
@@ -43,6 +45,8 @@ export default function RootLayout({
           <a href="#main" className="sr-only skip-link">
             skip to main content
           </a>
+          {/* Pulsing, drifting rose/violet fog behind all content — sets the mood. */}
+          <div aria-hidden className="fog" />
           {/* Fine grain over the whole page — fixed + pointer-events-none, cheap. */}
           <div aria-hidden className="grain" />
           {/* Reveals .reveal elements once as they scroll into view. */}

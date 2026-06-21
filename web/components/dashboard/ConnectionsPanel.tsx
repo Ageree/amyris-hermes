@@ -106,7 +106,7 @@ function EmptyState() {
           can't nest a Link inside it for correct navigation semantics). */}
       <Link
         href="/connect"
-        className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-3 text-sm font-medium text-canvas shadow-[0_0_0_1px_rgba(198,242,78,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
+        className="inline-flex h-8 items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-3 text-sm font-medium text-canvas shadow-[0_0_0_1px_rgba(226,90,130,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
       >
         connect a channel
       </Link>

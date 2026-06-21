@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "./Wordmark";
 
-// Marketing top bar — single line, ≤72px. Mono "hermes" wordmark (live pulse)
+// Marketing top bar — single line, ≤72px. Mono "dhizume" wordmark (live pulse)
 // left; in-page anchors + "sign in" + a single "get started" CTA right. Server
 // component (links only). Anchor links collapse below md so the bar never wraps.
 const SECTIONS = [

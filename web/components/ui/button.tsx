@@ -13,7 +13,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 // glow that intensifies on hover (feedback, motivated motion).
 const variants: Record<Variant, string> = {
   primary:
-    "bg-lime text-canvas font-medium shadow-[0_1px_0_0_rgba(255,255,255,0.25)_inset,0_8px_24px_-8px_rgba(198,242,78,0.55)] hover:bg-lime-dim hover:shadow-[0_1px_0_0_rgba(255,255,255,0.3)_inset,0_10px_30px_-6px_rgba(198,242,78,0.7)] hover:-translate-y-px active:translate-y-0",
+    "bg-lime text-canvas font-medium shadow-[0_1px_0_0_rgba(255,255,255,0.25)_inset,0_8px_24px_-8px_rgba(226,90,130,0.55)] hover:bg-lime-dim hover:shadow-[0_1px_0_0_rgba(255,255,255,0.3)_inset,0_10px_30px_-6px_rgba(226,90,130,0.7)] hover:-translate-y-px active:translate-y-0",
   secondary:
     "bg-surface-2 text-ink border border-border hover:bg-surface-3 hover:border-border-strong hover:-translate-y-px active:translate-y-0",
   ghost: "bg-transparent text-muted hover:text-ink hover:bg-surface-2",

@@ -109,7 +109,7 @@ export function PairingPanel({
                 target="_blank"
                 rel="noopener noreferrer"
                 data-testid="tg-open"
-                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-6 text-base font-medium text-canvas shadow-[0_0_0_1px_rgba(198,242,78,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-6 text-base font-medium text-canvas shadow-[0_0_0_1px_rgba(226,90,130,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
               >
                 open telegram
               </a>
@@ -132,7 +132,7 @@ export function PairingPanel({
               <a
                 href={imessagePairLink(IMESSAGE_NUMBER, code)}
                 data-testid="imessage-open"
-                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-6 text-base font-medium text-canvas shadow-[0_0_0_1px_rgba(198,242,78,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[var(--radius)] bg-lime px-6 text-base font-medium text-canvas shadow-[0_0_0_1px_rgba(226,90,130,0.3)] outline-none transition-colors hover:bg-lime-dim focus-visible:ring-2 focus-visible:ring-lime"
               >
                 open messages
               </a>
@@ -147,7 +147,7 @@ export function PairingPanel({
               </a>
             ) : (
               <p className="text-sm text-muted">
-                text <span className="font-mono text-ink">pair {code}</span> to the hermes number.
+                text <span className="font-mono text-ink">pair {code}</span> to the dhizume number.
               </p>
             )}
           </div>

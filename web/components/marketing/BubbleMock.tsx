@@ -1,3 +1,5 @@
+import Image from "next/image";
+
 // The hero's product preview: a polished chat thread where the assistant takes a
 // genuinely hard request, BROWSES the live web, and reports a concrete result.
 // This is the product itself (a chat), not a fake dashboard — bubbles are how
@@ -30,7 +32,7 @@ function Bubble({ from, delayMs, children }: BubbleProps) {
   );
 }
 
-// A "hermes is doing real work in a browser" chip — animated dots, no emoji.
+// A "dhizume is doing real work in a browser" chip — animated dots, no emoji.
 function WorkingChip({ delayMs }: { delayMs: number }) {
   return (
     <div
@@ -56,21 +58,27 @@ export function BubbleMock() {
       {/* a soft lime halo hugging the device */}
       <div
         aria-hidden
-        className="absolute -inset-6 -z-10 rounded-[2rem] bg-[radial-gradient(closest-side,rgba(198,242,78,0.18),transparent)]"
+        className="absolute -inset-6 -z-10 rounded-[2rem] bg-[radial-gradient(closest-side,rgba(226,90,130,0.18),transparent)]"
       />
       <div
         role="img"
-        aria-label="a chat thread where hermes browses the web and books a dentist appointment"
+        aria-label="a chat thread where dhizume browses the web and books a dentist appointment"
         className="rise w-full overflow-hidden rounded-[var(--radius-xl)] border border-border-strong bg-surface/90 shadow-2xl shadow-black/50 backdrop-blur"
       >
-        {/* thread header */}
+        {/* thread header — dhizume's masked-muse avatar + live dot */}
         <div className="flex items-center justify-between border-b border-border px-4 py-3">
           <div className="flex items-center gap-2.5">
-            <span aria-hidden className="relative inline-flex h-2 w-2 items-center justify-center">
-              <span className="absolute h-2 w-2 rounded-full bg-lime/60 ping-ring" />
-              <span className="relative h-1.5 w-1.5 rounded-full bg-lime pulse-dot" />
+            <span className="relative inline-flex h-6 w-6 shrink-0">
+              <Image
+                src="/dhizume/avatar.png"
+                alt=""
+                width={24}
+                height={24}
+                className="h-6 w-6 rounded-full object-cover ring-1 ring-border-strong"
+              />
+              <span aria-hidden className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full bg-lime ring-2 ring-surface pulse-dot" />
             </span>
-            <span className="font-mono text-xs text-ink">hermes</span>
+            <span className="font-mono text-xs text-ink">dhizume</span>
           </div>
           <span className="font-mono text-[10px] tracking-tight text-faint">
             imessage

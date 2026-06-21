@@ -56,7 +56,7 @@ export function Showcase() {
 
       <div
         className="flex flex-col gap-4 [mask-image:linear-gradient(to_right,transparent,black_8%,black_92%,transparent)]"
-        aria-label="example requests people send hermes"
+        aria-label="example requests people send dhizume"
       >
         <MarqueeRow items={ROW_A} />
         <MarqueeRow items={ROW_B} reverse />
