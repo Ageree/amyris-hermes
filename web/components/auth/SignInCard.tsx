@@ -21,10 +21,6 @@ const inputClass = cn(
 type PasswordFlow = "signIn" | "signUp";
 const MIN_PASSWORD = 8; // mirrors validatePasswordRequirements in convex/auth.ts
 
-function messageFromError(err: unknown): string {
-  return err instanceof Error && err.message ? err.message : String(err);
-}
-
 export function SignInCard() {
   const router = useRouter();
   const { signIn } = useAuthActions();
@@ -56,12 +52,15 @@ export function SignInCard() {
       // new users go to the pairing wizard to connect a channel first; returning
       // users land straight on their dashboard.
       router.push(flow === "signUp" ? "/connect" : "/dashboard");
-    } catch (err) {
-      const fallback =
+    } catch {
+      // Convex Auth surfaces raw server errors (InvalidAccountId, "account already
+      // exists", full stack traces — verbose on dev deployments) that must NEVER
+      // reach users. Always show a friendly, actionable message instead.
+      setError(
         flow === "signUp"
           ? "couldn't create that account — it may already exist. try signing in."
-          : "wrong email or password — or no account yet. try sign up.";
-      setError(messageFromError(err) || fallback);
+          : "wrong email or password — or no account yet. try sign up.",
+      );
     } finally {
       setPwPending(false);
     }
