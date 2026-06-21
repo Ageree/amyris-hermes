@@ -16,6 +16,9 @@ export default function Home() {
     <div className="relative flex min-h-dvh flex-col">
       <Nav />
       <main id="main" className="flex-1">
+        {/* the fold is the wallpaper: a clean screen of the dhizume video before
+            any content, so the page opens on the throne scene, not a text wall */}
+        <div aria-hidden className="min-h-[calc(100dvh-4rem)]" />
         <Capabilities />
         <HowItWorks />
         <Showcase />
