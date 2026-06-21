@@ -137,11 +137,11 @@
   background:
     linear-gradient(
       to bottom,
-      rgba(10, 8, 16, 0.7),
-      rgba(10, 8, 16, 0.58) 42%,
-      rgba(10, 8, 16, 0.8)
+      rgba(10, 8, 16, 0.42),
+      rgba(10, 8, 16, 0.48) 45%,
+      rgba(10, 8, 16, 0.62)
     ),
-    radial-gradient(120% 75% at 50% 0%, transparent, rgba(10, 8, 16, 0.5));
+    radial-gradient(120% 70% at 50% 0%, transparent, rgba(10, 8, 16, 0.4));
 }
 /* reduced-motion: drop the video, fall back to the static poster frame */
 @media (prefers-reduced-motion: reduce) {
