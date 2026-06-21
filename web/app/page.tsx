@@ -1,5 +1,4 @@
 import { Nav } from "@/components/marketing/Nav";
-import { Hero } from "@/components/marketing/Hero";
 import { Capabilities } from "@/components/marketing/Capabilities";
 import { HowItWorks } from "@/components/marketing/HowItWorks";
 import { Showcase } from "@/components/marketing/Showcase";
@@ -17,7 +16,6 @@ export default function Home() {
     <div className="relative flex min-h-dvh flex-col">
       <Nav />
       <main id="main" className="flex-1">
-        <Hero />
         <Capabilities />
         <HowItWorks />
         <Showcase />

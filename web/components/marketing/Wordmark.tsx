@@ -16,7 +16,7 @@ export function Wordmark({
     <Link
       href={href}
       className={cn(
-        "group inline-flex items-center gap-2.5 font-mono text-lg tracking-tight text-ink transition-colors hover:text-lime",
+        "group inline-flex items-center gap-2.5 font-mono text-lg tracking-tight text-lime transition-colors hover:text-lime-dim",
         className,
       )}
     >
