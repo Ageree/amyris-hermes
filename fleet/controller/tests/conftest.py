@@ -8,7 +8,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Callable
 from unittest.mock import MagicMock
 
@@ -228,7 +228,10 @@ def fake_secrets() -> FakeSecretManager:
 @pytest.fixture()
 def deps(test_cfg, fake_docker, fake_convex, fake_state_sync, fake_secrets):
     return ControllerDeps(
-        cfg=test_cfg,
+        # Decision-logic tests pin a fixed 90s TTL so they exercise _decide()'s
+        # stale-vs-fresh branch on its own, independent of the production default
+        # (240s, raised in CTRL-13 to match .env.example/README).
+        cfg=replace(test_cfg, stale_ttl_s=90.0),
         convex=fake_convex,
         docker=fake_docker,
         state_sync=fake_state_sync,

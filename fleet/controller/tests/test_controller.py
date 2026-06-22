@@ -663,6 +663,12 @@ class TestCapacityConfig:
     def test_capacity_per_host_default(self, test_cfg):
         assert test_cfg.capacity_per_host == 50
 
+    def test_stale_ttl_default_matches_docs(self, test_cfg):
+        # CTRL-13: the code default must match .env.example/README (240s, >= the
+        # worst-case Hermes turn) so a bare run (no env file) can't relaunch a
+        # healthy container mid-turn and drop an in-flight reply.
+        assert test_cfg.stale_ttl_s == 240.0
+
     def test_capacity_per_host_from_env(self, monkeypatch):
         monkeypatch.setenv("CONVEX_URL", "https://t.convex.cloud")
         monkeypatch.setenv("WORKER_SECRET", "s")

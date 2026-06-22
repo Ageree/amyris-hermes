@@ -142,7 +142,7 @@ class ControllerConfig:
             image=image,
             hosts=hosts,
             poll_interval_s=_float_env("POLL_INTERVAL_S", 3.0),
-            stale_ttl_s=_float_env("STALE_TTL_S", 90.0),
+            stale_ttl_s=_float_env("STALE_TTL_S", 240.0),
             mirror_interval_s=_float_env("MIRROR_INTERVAL_S", 300.0),
             ram_headroom_pct=_int_env("RAM_HEADROOM_PCT", 30),
             capacity_per_host=_int_env("CAPACITY_PER_HOST", 50),

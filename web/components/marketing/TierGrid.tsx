@@ -98,7 +98,7 @@ function TierCard({ tier }: { tier: TierSpec }) {
           )}
         </div>
         <span className="font-mono text-sm text-lime">
-          {tier.msgQuota.toLocaleString()} turns / mo
+          {tier.msgQuota.toLocaleString()} messages / month
         </span>
         <p className="text-sm leading-relaxed text-muted">{tier.blurb}</p>
       </div>

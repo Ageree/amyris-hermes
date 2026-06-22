@@ -30,8 +30,14 @@ test.describe("landing page", () => {
   });
 
   test("has a sign-in affordance linking to /signin", async ({ page }) => {
-    // The nav exposes a plain "sign in" link. Scope to the header so the
-    // (also valid) footer "sign in" link doesn't make this ambiguous.
+    // The top nav is intentionally scroll-revealed (Nav.tsx hides it with
+    // -translate-y-full + pointer-events-none until scrollY > ~60vh, to keep the
+    // throne-video fold chrome-free). Reveal it first, then assert the header
+    // "sign in" link works. The first-fold sign-in path (hero "get started" CTA)
+    // is covered by the separate test below.
+    await page.evaluate(() => window.scrollTo(0, Math.ceil(window.innerHeight * 0.7)));
+
+    // Scope to the header so the (also valid) footer "sign in" link isn't ambiguous.
     const signIn = page.locator("header").getByRole("link", { name: /^sign in$/i });
     await expect(signIn).toBeVisible();
     await expect(signIn).toHaveAttribute("href", /\/signin$/);
