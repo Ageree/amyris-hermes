@@ -28,10 +28,13 @@ import type * as http from "../http.js";
 import type * as intents from "../intents.js";
 import type * as lib_auth from "../lib/auth.js";
 import type * as lib_identity from "../lib/identity.js";
+import type * as lib_sitelib from "../lib/sitelib.js";
+import type * as lib_turso from "../lib/turso.js";
 import type * as messages from "../messages.js";
 import type * as migrations from "../migrations.js";
 import type * as pairing from "../pairing.js";
 import type * as quota from "../quota.js";
+import type * as sites from "../sites.js";
 import type * as testing from "../testing.js";
 
 import type {
@@ -61,10 +64,13 @@ declare const fullApi: ApiFromModules<{
   intents: typeof intents;
   "lib/auth": typeof lib_auth;
   "lib/identity": typeof lib_identity;
+  "lib/sitelib": typeof lib_sitelib;
+  "lib/turso": typeof lib_turso;
   messages: typeof messages;
   migrations: typeof migrations;
   pairing: typeof pairing;
   quota: typeof quota;
+  sites: typeof sites;
   testing: typeof testing;
 }>;
 

@@ -30,6 +30,21 @@ export function assertWorker(provided: string): void {
   }
 }
 
+/**
+ * Gate for the chat-sites `publish` action. DELIBERATELY a SEPARATE, narrowly
+ * scoped secret (not WORKER_SECRET): `publish.py` runs inside the agent's
+ * `terminal` tool, which processes untrusted inbound text, so a prompt-injected
+ * agent could read whatever secret reaches that env. Scoping this to "can publish
+ * sites" bounds the blast radius — it can never claim/complete/read the queue the
+ * way WORKER_SECRET would. Fails closed when unconfigured.
+ */
+export function assertSitesPublisher(provided: string): void {
+  const expected = process.env.SITES_PUBLISH_SECRET ?? "";
+  if (!expected || !safeEqual(provided, expected)) {
+    throw new Error("unauthorized publisher");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Reusable literal-union validators — ONE source so function arg/return
 // validators never drift from each other. (schema.ts intentionally keeps its own

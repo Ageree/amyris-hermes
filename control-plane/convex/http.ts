@@ -2,6 +2,8 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
+import { injectRuntime, guardSql } from "./lib/sitelib";
+import { execSql } from "./lib/turso";
 
 const http = httpRouter();
 
@@ -206,6 +208,105 @@ http.route({
       // swallow — durable enqueue already succeeded
     }
     return jsonOk({ ok: true });
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// chat-sites: serve generated sites + proxy app data. Served from the
+// `.convex.site` origin — DELIBERATELY separate from the dashboard origin so
+// generated (LLM, possibly prompt-injected) JS cannot reach the dashboard's
+// auth cookies. The per-site Turso token stays server-side; the browser only
+// ever talks to /site-data/<handle> (same origin), which proxies guarded SQL to
+// that one site's isolated DB.
+// ---------------------------------------------------------------------------
+
+function htmlResponse(html: string, status = 200): Response {
+  return new Response(html, {
+    status,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      // user content on its own origin; don't let it be framed onto our dashboard
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+const NOT_FOUND_HTML =
+  "<!doctype html><meta charset=utf-8><title>Not found</title>" +
+  "<body style='font-family:system-ui;display:grid;place-items:center;height:100vh;margin:0'>" +
+  "<div><h1>404</h1><p>No site lives here (yet).</p></div>";
+
+// GET /s/<handle> — serve the generated single-file document.
+http.route({
+  pathPrefix: "/s/",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const handle = decodeURIComponent(url.pathname.slice("/s/".length)).replace(/\/+$/, "");
+    if (!handle) return htmlResponse(NOT_FOUND_HTML, 404);
+    const site = await ctx.runQuery(internal.sites.getByHandle, { handle });
+    if (!site) return htmlResponse(NOT_FOUND_HTML, 404);
+    const html = injectRuntime(site.html, {
+      handle: site.handle,
+      kind: site.kind,
+      apiBase: url.origin,
+    });
+    return htmlResponse(html);
+  }),
+});
+
+function dataJson(obj: unknown, status = 200): Response {
+  return new Response(JSON.stringify(obj), {
+    status,
+    headers: {
+      "content-type": "application/json",
+      "access-control-allow-origin": "*",
+      "access-control-allow-methods": "POST, OPTIONS",
+      "access-control-allow-headers": "content-type",
+    },
+  });
+}
+
+// CORS preflight for the data proxy (apps may be embedded cross-origin).
+http.route({
+  pathPrefix: "/site-data/",
+  method: "OPTIONS",
+  handler: httpAction(async () => dataJson({ ok: true })),
+});
+
+// POST /site-data/<handle> — run ONE guarded SQL statement against the site's
+// own isolated Turso DB. Open by design (public read+write to the site's own DB);
+// blast radius is that single site. See lib/sitelib.guardSql.
+http.route({
+  pathPrefix: "/site-data/",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const handle = decodeURIComponent(url.pathname.slice("/site-data/".length)).replace(/\/+$/, "");
+    const site = await ctx.runQuery(internal.sites.getByHandle, { handle });
+    if (!site) return dataJson({ error: "site not found" }, 404);
+    if (site.kind !== "app" || !site.tursoHostname || !site.tursoToken) {
+      return dataJson({ error: "site has no data backend" }, 400);
+    }
+    let payload: any;
+    try {
+      payload = await request.json();
+    } catch {
+      return dataJson({ error: "invalid JSON body" }, 400);
+    }
+    let sql: string;
+    try {
+      sql = guardSql(String(payload?.sql ?? ""));
+    } catch (e: any) {
+      return dataJson({ error: String(e?.message ?? e) }, 400);
+    }
+    const args = Array.isArray(payload?.args) ? payload.args : [];
+    try {
+      const result = await execSql(site.tursoHostname, site.tursoToken, sql, args);
+      return dataJson(result);
+    } catch (e: any) {
+      return dataJson({ error: String(e?.message ?? e) }, 400);
+    }
   }),
 });
 
