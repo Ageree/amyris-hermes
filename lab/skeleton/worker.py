@@ -1294,8 +1294,11 @@ def seed_create_site(hermes_home: str) -> bool:
         os.makedirs(os.path.join(dst_dir, "scripts"), exist_ok=True)
         for rel in ("SKILL.md", os.path.join("scripts", "publish.py")):
             s = os.path.join(src_dir, rel)
-            if os.path.exists(s):
-                shutil.copyfile(s, os.path.join(dst_dir, rel))
+            d = os.path.join(dst_dir, rel)
+            # In the operator's deployed layout HERMES_HOME is the worker's parent,
+            # so src == dst — skip the self-copy (shutil.copyfile would SameFileError).
+            if os.path.exists(s) and os.path.abspath(s) != os.path.abspath(d):
+                shutil.copyfile(s, d)
         script = os.path.join(dst_dir, "scripts", "publish.py")
         os.environ["SITE_PUBLISH_PY"] = script  # SKILL.md runs `python3 "$SITE_PUBLISH_PY"`
 
