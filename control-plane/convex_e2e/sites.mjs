@@ -124,6 +124,25 @@ async function main() {
     check(missing.status === 404, "GET unknown handle -> 404");
   }
 
+  // --- 6b. OWNERSHIP / IDOR (needs a real Id<"users"> via TEST_USER_ID) --------
+  const OWNER = process.env.TEST_USER_ID;
+  if (OWNER) {
+    const ownHandle = `e2e-own-${rand}`;
+    const make = await callAction("sites:publish", { secret: SECRET, handle: ownHandle, kind: "static", html: "<h1>owned</h1>", userId: OWNER });
+    check(make.status === "success", "publish OWNED site (with userId) ok", JSON.stringify(make).slice(0, 150));
+    // the exploit: try to overwrite the owned site by OMITTING userId -> must be blocked
+    const steal = await callAction("sites:publish", { secret: SECRET, handle: ownHandle, kind: "static", html: "<h1>HIJACKED</h1>" });
+    check(steal.status === "error" && /is taken/.test(steal.errorMessage || ""), "IDOR: overwrite owned site w/o userId BLOCKED", JSON.stringify(steal).slice(0, 150));
+    // confirm the page was NOT changed by the blocked attempt
+    const after = await fetch(`${SITE}/s/${ownHandle}`).then((r) => r.text());
+    check(after.includes("owned") && !after.includes("HIJACKED"), "owned site content unchanged after blocked overwrite");
+    // legit owner republishes with the matching userId -> ok
+    const re = await callAction("sites:publish", { secret: SECRET, handle: ownHandle, kind: "static", html: "<h1>owned v2</h1>", userId: OWNER });
+    check(re.status === "success", "owner republish (matching userId) ok", JSON.stringify(re).slice(0, 150));
+  } else {
+    console.log("  skip  ownership/IDOR cases (set TEST_USER_ID=<a real users id> to run them)");
+  }
+
   // --- 7. cleanup provisioned Turso DBs (no probe junk) --------------------
   if (TURSO) {
     const list = await fetch(`https://api.turso.tech/v1/organizations/${ORG}/databases`, {

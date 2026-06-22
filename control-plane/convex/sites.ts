@@ -136,9 +136,22 @@ export const publish = action({
     if (!base) throw new Error("SITES_PUBLIC_BASE not configured");
 
     // Look up an existing site to enforce ownership + reuse its DB on republish.
+    // OWNERSHIP (IDOR guard): an OWNED site may only be republished by presenting
+    // the SAME owner userId. The check is UNCONDITIONAL on existing.userId — a
+    // caller can NOT bypass it by omitting args.userId (the old `&& args.userId`
+    // hole let any tenant overwrite another tenant's site, since the publish
+    // secret is shared). undefined args.userId !== a set owner -> rejected.
+    //
+    // ponytail: SITES_PUBLISH_SECRET is shared across tenants, so args.userId
+    // (agent-supplied) is the only identity signal — it can't be cryptographically
+    // bound. Ceiling: takeover now requires KNOWING the victim's opaque Convex
+    // userId (not visible to another tenant's agent) AND that the site is owned
+    // (publish with USER_ID set). Upgrade path before broad multi-tenant exposure:
+    // per-tenant publish secrets mapped server-side to userId (so the owner is
+    // derived, never trusted from the arg). Tracked as a go-live prerequisite.
     const existing = await ctx.runQuery(internal.sites.getByHandle, { handle });
     if (existing) {
-      if (existing.userId && args.userId && existing.userId !== args.userId) {
+      if (existing.userId !== undefined && args.userId !== existing.userId) {
         throw new Error(`handle "${handle}" is taken`);
       }
       if (existing.kind !== args.kind) {
