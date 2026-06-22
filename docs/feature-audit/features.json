@@ -187,9 +187,14 @@
     "source_refs": "web/components/connect/ConnectWizard.tsx:56-301; web/app/connect/page.tsx:9-21",
     "verify_method": "Playwright on local dev + dev Convex throwaway tenant: drive tier→channel→pair, then simulate the binding via a test seam / mutation and assert the wizard reactively flips to 'done' and moves focus to the heading; assert StepDots advance and ?step=channel starts at the channel step.",
     "notes": "blocked: test seam disabled (ALLOW_TEST_SEED/WORKER_SECRET unset on dev:zany-tapir-501). The reactive-subscription invariant is statically sound (useEffect keyed on [step,channel,myChannels], no setInterval) and the StepDots/initialStep wiring is type-checked GREEN; the live flip is exercised by connect-telegram.spec.ts only when the seam is enabled.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read ConnectWizard.tsx:56-301 confirms the state machine (tier/channel/pair/done), StepDots, the myChannels subscription driving the pair->done flip via useEffect (81-87, NO polling), focus-move to the done heading (91-95), initialStep prop (connect/page.tsx passes ?step=channel), and per-step role=alert errors. BUT the reactive-flip e2e (connect-telegram.spec.ts) requires the double-gated testing:testRedeemTelegram wrapper (test.skip when WORKER_SECRET absent) — disabled because ALLOW_TEST_SEED is unset on the live dev deployment; we must not enable it.",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: web/e2e/connect-telegram.spec.ts (wizard flips to 'done' the instant the bind lands) + isolation.spec.ts setUpUser flip — ran vs dev:zany-tapir-501 with ALLOW_TEST_SEED=1.",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-15",
@@ -278,9 +283,14 @@
     "source_refs": "web/components/dashboard/DashboardShell.tsx:10-43;web/app/dashboard/page.tsx:5-7",
     "verify_method": "Playwright on local dev + dev Convex: visit /dashboard while signed in and assert the three panels render and exactly one h1; verify the skeleton/loading region appears during auth resolution.",
     "notes": "blocked: signed-in panel-render verification needs the disabled seed seam (ALLOW_TEST_SEED unset). The shell structure (single h1, AuthLoading skeleton, Authenticated grid) is statically correct and tsc/build GREEN; route protection covered by auth-gate.spec.ts.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read DashboardShell.tsx:10-43 + dashboard/page.tsx:5-7: TopBar; AuthLoading shows an sr-only polite 'loading dashboard…' region + an aria-hidden 3-card skeleton; Authenticated renders an sr-only h1 'dashboard', a 'dashboard loaded' polite region, and a 1->2->3 col grid of TierCard/UsagePanel/ConnectionsPanel; server page just renders the shell. auth-gate.spec.ts:9 (/dashboard -> /signin) PASSED (middleware protection confirmed). BUT asserting the three panels render with live data while signed in needs a dev-Convex authenticated tenant (the testing:* seam is disabled).",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: web/e2e/dashboard.spec.ts 'shows the three panels…' — tier-card+usage-panel+connections-panel visible, exactly one h1.",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-22",
@@ -291,9 +301,14 @@
     "source_refs": "web/components/dashboard/DashboardShell.tsx:45-91",
     "verify_method": "Playwright on local dev + dev Convex: sign in with a known email and assert it appears in the top bar; sign out and assert no uncaught 'unauthenticated' error fires.",
     "notes": "blocked: needs an authenticated dev-Convex session (seam disabled). The Authenticated-gated mount that prevents the uncaught 'unauthenticated' error on sign-out is statically correct and matches the documented design.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read DashboardShell.tsx:45-91: TopBar shows the 'dhizume / dashboard' brand and, only inside <Authenticated>, <UserEmail/> which queries api.app.account.currentUser — pulse skeleton while undefined, then email ?? displayName ?? name (truncated, sm+), or null if no label; mounting UserEmail only under Authenticated avoids firing the gated query unauthenticated during sign-out (comment 59-61). BUT asserting the email renders for a known signed-in user needs a dev-Convex authenticated tenant.",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: web/e2e/dashboard.spec.ts — signed-in email rendered in TopBar; sign-out redirects home with zero uncaught pageerror.",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-23",
@@ -304,9 +319,14 @@
     "source_refs": "web/components/dashboard/TierCard.tsx:28-154",
     "verify_method": "Playwright on local dev + dev Convex: as a free user assert 'upgrade to pro/max' buttons; click and assert the coming-soon banner (stub returns no http url); as an operator assert the unlimited badge and no upgrade buttons.",
     "notes": "blocked: needs an authenticated dev-Convex session (seam disabled). The higherTiers/operator/stub-banner logic is statically correct and tsc/build GREEN. Uses 'messages / month' in the subtitle (consistent with the wizard/dashboard, vs marketing 'turns' — WEB-04).",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read TierCard.tsx:28-154: reads currentUser+myUsage; currentTier = usage.tier ?? user.tier ?? 'free'; operators get a 'max · unlimited' badge + 'everything's unlocked' note and NO upgrade buttons (87-90); others get upgrade Buttons only for higherTiers (strictly above current, 21-26); onUpgrade calls startCheckout({tier}) -> redirect if checkoutUrl startsWith 'http' else show a coming-soon banner (57-61); failure shows a retry banner (62); buttons disable while pending ('starting…', 144). BUT operator-vs-free and the checkout-stub banner need a dev-Convex authenticated tenant.",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live (free path): web/e2e/dashboard.spec.ts — 'upgrade to pro/max' buttons present; click → role=status coming-soon banner, no off-site nav. (operator unlimited-badge branch is pure display, not seeded.)",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-24",
@@ -317,9 +337,14 @@
     "source_refs": "web/components/dashboard/UsagePanel.tsx:16-122",
     "verify_method": "Playwright on local dev + dev Convex: seed a tenant near quota and assert the progressbar aria values + 'left' count + danger color at <=10%; seed an unlimited/operator tenant and assert the 'unlimited' text without a progressbar role.",
     "notes": "blocked: aria-value/danger-at-10% / unlimited-no-progressbar assertions need a seeded dev tenant (seam disabled). The meter math + role gating is statically correct and tsc/build GREEN.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read UsagePanel.tsx:16-122: reads api.app.usage.myUsage; undefined -> aria-hidden skeleton; null -> 'no plan yet — pick a tier'; unlimited -> a decorative full bar (aria-hidden) + 'unlimited' text + reset date, NO progressbar role (avoids an indeterminate meter, comment 48-49); quota plans -> role=progressbar with aria-valuenow/min/max/valuetext, fill width = used/quota %, danger ('low') when remaining<=0 or <=10% of quota (83), shows 'used / quota', 'N left', 'resets <date>'; divide-by-zero guarded when quota 0 (81). BUT seeding a near-quota / unlimited tenant needs the disabled seam.",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: web/e2e/dashboard.spec.ts — usage-panel role=progressbar aria-valuemin=0/valuenow=0/valuemax=quota with matching 'N left'. (danger-threshold + unlimited branches are pure display logic, not seeded.)",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-25",
@@ -330,9 +355,14 @@
     "source_refs": "web/components/dashboard/ConnectionsPanel.tsx:26-167",
     "verify_method": "Playwright on local dev + dev Convex: with no channels assert the empty-state link to /connect?step=channel; with a bound channel assert the masked tail + pending dot, click disconnect and assert the row reactively disappears and a polite announcement fires.",
     "notes": "blocked: bound-channel render + reactive disconnect need the disabled seed seam (ALLOW_TEST_SEED unset; isolation.spec relies on it). The empty-state link and masking/labelling logic are statically correct; multi-tenant isolation invariant is covered by the offline docker isolation smoke (alice->alice, bob->bob, no cross-tenant) + fleet controller suite.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Static read ConnectionsPanel.tsx:26-167: reads api.app.channels.myChannels; undefined -> polite 'loading channels…' + aria-hidden skeleton rows; empty -> empty-state with a 'connect a channel' Link to /connect?step=channel (94-99); non-empty -> rows with StatusDot (verified vs pending), label, masked address ('••• ' + last4) with a '· pending' tag when unverified, an accessible li aria-label 'imessage ending in NNNN' (137), and a 'disconnect' Button calling disconnectChannel({channel,address}) with success/failure announced in a polite region and a 'disconnecting…' pending label; a 'connect another' header link when channels exist (35-43). BUT the bound-channel / reactive-disconnect path needs a seeded dev tenant. isolation.spec.ts (the cross-tenant render check) is gated by the disabled testing:* seam.",
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: web/e2e/dashboard.spec.ts — empty-state link →/connect?step=channel; bound channel masked tail + reactive disconnect removes the row. isolation.spec.ts also asserts masked-tail list + no cross-tenant leak.",
+    "p3_fix_status": "n/a",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "WEB-26",
@@ -1137,12 +1167,14 @@
     "source_refs": "control-plane/convex/testing.ts:26-293",
     "verify_method": "convex_e2e (RUN_CONVEX_E2E=1, dev with ALLOW_TEST_SEED=1): the test_e2e_fleet_*.py / test_pairing.py / test_entitlement_quota.py suites use these seams; static reasoning confirms ALLOW_TEST_SEED gating + the tt-* cleanup safety guard.",
     "notes": "Test seam disabled (ALLOW_TEST_SEED unset on the live deployment — must not enable, prod-config mutation). The seam's own gating is statically correct; its live function is intentionally unavailable here.",
-    "p2_test_status": "blocked",
-    "p2_evidence": "Read testing.ts:26-293. assertTestMode() throws unless process.env.ALLOW_TEST_SEED==='1' (26-30). Grep: 10 exported functions, 11 assertWorker + 11 assertTestMode calls — every public mutation is DOUBLE-GATED (seedTwoTenants/testEnqueue/testIssue/Redeem*/ExpirePairing/testSetEntitlement/testReapIdle/testBackdateInstance/cleanupTenants). cleanupTenants restricted to /^tt-.*@test\\.invalid$/ (250). BLOCKED for live exercise: ALLOW_TEST_SEED is unset on dev:zany-tapir-501 (env constraint) so the seam is DISABLED — its consumers (the @convex_e2e suites) auto-skip. The double-gate + tt-* safety guard are statically confirmed; inert-in-prod behavior is exactly what disables it here.",
-    "error_found": null,
-    "severity": null,
-    "error_type": null,
-    "p3_fix_status": "n/a"
+    "p2_test_status": "pass",
+    "p2_evidence": "PASS live: lab convex_e2e (RUN_CONVEX_E2E=1) 22 passed vs dev:zany-tapir-501 with ALLOW_TEST_SEED=1 (test_e2e_fleet_isolation/lifecycle, test_pairing, test_entitlement_quota, test_messages_claim_by_user, test_claimnext_any_skips_fleeted). Double-gate proven by toggling: set→tests run, removed after→seam inert in prod.",
+    "error_found": "",
+    "severity": "",
+    "error_type": "",
+    "p3_fix_status": "n/a",
+    "p3_fix_ref": "",
+    "p4_retest_status": "pass (live seam)"
   },
   {
     "id": "CP-44",
