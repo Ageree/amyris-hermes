@@ -63,7 +63,7 @@ class TelegramClient:
             try:
                 retry_after = float(r.json().get("parameters", {}).get("retry_after", 1.0))
             except Exception:
-                pass
+                log.debug("429 retry_after parse failed for sendMessage to %s", chat_id, exc_info=True)
             self._sleep(min(MAX_RETRY_AFTER, max(0.0, retry_after)))
             r = self._post("sendMessage", payload)
 
@@ -104,7 +104,7 @@ class TelegramClient:
             try:
                 retry_after = float(r.json().get("parameters", {}).get("retry_after", 1.0))
             except Exception:
-                pass
+                log.debug("429 retry_after parse failed for %s", method, exc_info=True)
             self._sleep(min(MAX_RETRY_AFTER, max(0.0, retry_after)))
             r = self._post(method, payload)
 
@@ -183,7 +183,7 @@ class TelegramClient:
             try:
                 retry_after = float(r.json().get("parameters", {}).get("retry_after", 1.0))
             except Exception:
-                pass
+                log.debug("429 retry_after parse failed for sendRichMessage to %s", chat_id, exc_info=True)
             self._sleep(min(MAX_RETRY_AFTER, max(0.0, retry_after)))
             r = self._post("sendRichMessage", payload)
 

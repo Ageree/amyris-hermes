@@ -109,7 +109,8 @@ def create_app(cfg) -> FastAPI:
                 content=reply[:MAX_REPLY_CHARS],
             )
         except Exception:
-            log.exception("sendblue reply failed")
+            log.exception("sendblue reply failed for handle=%s", msg.handle)
+            return {"ok": False, "error": "reply_delivery_failed"}
 
         return {"ok": True}
 
