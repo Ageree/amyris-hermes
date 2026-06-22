@@ -38,18 +38,12 @@ from typing import Any, Callable, List, Optional
 import requests
 
 from bubbles import split_into_bubbles, DEFAULT_HARD_CAP
+from text_cleaning import THINK_RE as _THINK, THINK_OPEN_RE as _THINK_OPEN
 
 DEFER_SENTINEL = "[[DEFER]]"   # stage-1 verdict: needs tools/data/action -> Hermes
 THINK_SENTINEL = "[[THINK]]"   # stage-1 verdict: no tools but needs reasoning -> medium lane
 DEFAULT_BASE_URL = "https://api.minimax.io/v1"
 DEFAULT_MODEL = "MiniMax-M3"  # pinned: only M3 honors thinking-disabled
-
-# Strip reasoning blocks. The medium lane runs with thinking ON, so M3 emits
-# `<think>...</think>` inline in content — drop it. Also drop a DANGLING open
-# `<think>` with no close (reasoning truncated by max_tokens): otherwise raw
-# reasoning would leak as the "answer" (stripping it to "" -> defer to Hermes).
-_THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
-_THINK_OPEN = re.compile(r"<think>.*\Z", re.DOTALL | re.IGNORECASE)
 
 # Obvious-heavy prefilter: a message carrying a link almost always needs the
 # real tool agent (saved-content resolve, browser, fetch) — skip the probe and

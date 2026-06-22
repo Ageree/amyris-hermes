@@ -15,6 +15,7 @@ from typing import Optional
 from bubbles import split_into_bubbles
 from channels.base import OutboundResult
 from channels.rich import FilePart, ImagePart, PollPart, ReactionPart, TextPart, VoicePart
+from channels._channel_utils import is_remote as _is_remote, poll_to_text as _poll_to_text
 
 log = logging.getLogger("worker.channels.imessage")
 
@@ -155,11 +156,6 @@ class SendblueChannel:
 # Module helpers (also useful standalone / in tests)
 
 
-def _is_remote(src: str) -> bool:
-    """True only for an http(s) URL — local paths are refused (file-exfil guard)."""
-    return isinstance(src, str) and (src.startswith("http://") or src.startswith("https://"))
-
-
 def _emoji_to_tapback(emoji: str) -> Optional[str]:
     """Map a free-form reaction emoji onto Sendblue's 6 tapbacks, or None.
 
@@ -173,8 +169,4 @@ def _emoji_to_tapback(emoji: str) -> Optional[str]:
     return _EMOJI_TO_TAPBACK.get(e)
 
 
-def _poll_to_text(part: PollPart) -> str:
-    """Degrade a PollPart to a numbered text list (iMessage has no native poll)."""
-    lines = [part.question]
-    lines.extend(f"{i}. {opt}" for i, opt in enumerate(part.options, 1))
-    return "\n".join(lines)
+

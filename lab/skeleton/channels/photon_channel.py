@@ -57,6 +57,7 @@ from channels.rich import (
     TextPart,
     VoicePart,
 )
+from channels._channel_utils import is_remote as _is_remote, poll_to_text as _poll_to_text
 
 log = logging.getLogger("worker.channels.photon")
 
@@ -404,11 +405,6 @@ class PhotonChannel:
 # Module helpers (also useful standalone / in tests)
 
 
-def _is_remote(src: str) -> bool:
-    """True only for an http(s) URL — local paths are refused (file-exfil guard)."""
-    return isinstance(src, str) and (src.startswith("http://") or src.startswith("https://"))
-
-
 def _url_has_extension(src: str) -> bool:
     """True if the URL PATH's last segment has a file extension (e.g. '/cat.png').
 
@@ -428,13 +424,6 @@ def _ext_for_mime(mime: str) -> Optional[str]:
     type just yields None and we skip the synthetic name (no hand-rolled table).
     """
     return mimetypes.guess_extension(mime) or None
-
-
-def _poll_to_text(part: PollPart) -> str:
-    """Degrade a PollPart to a numbered text list (iMessage has no native poll)."""
-    lines = [part.question]
-    lines.extend(f"{i}. {opt}" for i, opt in enumerate(part.options, 1))
-    return "\n".join(lines)
 
 
 def _port_from_base(base: str) -> Optional[int]:
