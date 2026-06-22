@@ -1,0 +1,2 @@
+{"turn":1,"phase":"setup","note":"harness+probe+battery built; smoke validating probe"}
+{"turn":2,"phase":"test","note":"FOUND reliability root cause: worker kills hermes at HERMES_TIMEOUT=220s but builds ran >260s (transient model-slow + 450-line output). FIX: HERMES_TIMEOUT=400 + lean-skill (~80-180 lines). Re-probe: build now 56.6s ok+clean (briz-cafe). Running 6-build battery (waves of 3) to test reliability + app data path."}

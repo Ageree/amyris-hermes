@@ -50,6 +50,11 @@ If the request needs to remember anything between visits → `app`. Otherwise �
 1. Generate a SINGLE self-contained HTML file (inline `<style>` and `<script>` —
    no external build, no frameworks needed). Make it genuinely nice and
    personalized to what they asked: real content, good layout, mobile-friendly.
+   **Keep it TIGHT and fast to produce — aim for ~80–180 lines of HTML.** Win on
+   taste and a clean layout, not on length: a few well-crafted sections beat a
+   sprawling page. Don't pad with filler sections the user didn't ask for, don't
+   write giant `:root` palettes or repeat CSS — concise is faster to generate AND
+   reads better. (A long document also risks the reply timing out before it ships.)
 2. Pick a `handle` — a short slug, `a-z 0-9 -`, 2–63 chars (e.g. `annas-bakery`,
    `team-poll`). It becomes part of the URL. If it's taken, publish fails — pick
    another.
