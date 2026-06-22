@@ -46,9 +46,11 @@ from channels.rich import TextPart, parse_rich
 # Hermes-only path, NOT crash-loop the always-on daemon at import time. Mirrors
 # the composio guard.
 try:
-    from fast_lane import contains_url, fast_reply, stream_fast_reply
+    from fast_lane import contains_url, looks_like_build_request, fast_reply, stream_fast_reply
 except Exception:  # pragma: no cover - exercised only on a broken deploy
     def contains_url(text: str) -> bool:  # noqa: ARG001 - stub keeps the daemon alive
+        return False
+    def looks_like_build_request(text: str) -> bool:  # noqa: ARG001 - stub
         return False
     fast_reply = None
     stream_fast_reply = None
@@ -387,6 +389,8 @@ def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]
     if not cfg.fast_lane_enabled:
         return False
     if contains_url(text):  # links almost always need the real tool agent
+        return False
+    if looks_like_build_request(text):  # "make me a site/app" needs create-site skill + terminal
         return False
     if fast_fn is not None:
         return True
