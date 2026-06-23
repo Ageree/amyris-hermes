@@ -1,16 +1,20 @@
 import { VideoBackground } from "@/components/marketing/VideoBackground";
 import { Nav } from "@/components/marketing/Nav";
 import { Hero } from "@/components/marketing/Hero";
-import { PhoneShowcase } from "@/components/marketing/PhoneShowcase";
+import { Film } from "@/components/marketing/Film";
+import { RealThings } from "@/components/marketing/RealThings";
+import { Channels } from "@/components/marketing/Channels";
 import { TierGrid } from "@/components/marketing/TierGrid";
 import { Faq } from "@/components/marketing/Faq";
 import { CtaBand } from "@/components/marketing/CtaBand";
 import { Footer } from "@/components/marketing/Footer";
 
-// Public marketing landing — no auth. The fold is the clean dhizume throne-room
-// wallpaper (nothing covers it). On scroll: the living telegram thread
-// (PhoneShowcase) where dhizume takes real tasks and texts back real artifacts,
-// then pricing → faq → cta.
+// Public marketing landing — no auth. Narrative arc:
+//   hero (dhizume throne wallpaper + the promise)
+//   → film: watch her actually work in imessage (the proof, #how)
+//   → real things she finishes (capabilities bento)
+//   → lives where you already text (channels)
+//   → pricing → faq → closing cta.
 export default function Home() {
   return (
     <div className="relative flex min-h-dvh flex-col">
@@ -20,7 +24,9 @@ export default function Home() {
       <Nav />
       <main id="main" className="flex-1">
         <Hero />
-        <PhoneShowcase />
+        <Film />
+        <RealThings />
+        <Channels />
         <TierGrid />
         <Faq />
         <CtaBand />

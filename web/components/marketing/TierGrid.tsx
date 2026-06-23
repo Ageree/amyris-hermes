@@ -47,6 +47,12 @@ function priceLabel(tier: TierSpec): string {
   return tier.priceUsd === 0 ? "free" : `$${tier.priceUsd}`;
 }
 
+// Deterministic thousands separator — avoids toLocaleString()'s server/client
+// locale mismatch (the React #418 hydration warning on the tier cards).
+function withCommas(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}
+
 function Benefit({ text, on }: Feature) {
   return (
     <li className="flex items-center gap-2.5">
@@ -98,7 +104,7 @@ function TierCard({ tier }: { tier: TierSpec }) {
           )}
         </div>
         <span className="font-mono text-sm text-lime">
-          {tier.msgQuota.toLocaleString()} messages / month
+          {withCommas(tier.msgQuota)} messages / month
         </span>
         <p className="text-sm leading-relaxed text-muted">{tier.blurb}</p>
       </div>
@@ -136,12 +142,12 @@ function TierCard({ tier }: { tier: TierSpec }) {
 export function TierGrid() {
   return (
     <section id="pricing" className="mx-auto max-w-6xl px-6 py-24">
-      <div className="reveal mx-auto mb-14 max-w-lg text-center">
-        <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
-          one assistant. pick your headroom.
+      <div className="reveal mx-auto mb-14 max-w-xl text-center">
+        <h2 className="font-display text-4xl font-medium tracking-[-0.01em] text-ink sm:text-5xl">
+          one assistant. <em className="italic text-lime">pick your headroom.</em>
         </h2>
-        <p className="mt-4 text-lg leading-relaxed text-muted">
-          both imessage &amp; telegram on every tier. start free, upgrade when you
+        <p className="mx-auto mt-4 max-w-md text-base leading-relaxed text-muted">
+          both imessage and telegram on every tier. start free, upgrade when you
           outgrow it.
         </p>
       </div>

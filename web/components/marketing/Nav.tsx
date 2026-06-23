@@ -6,15 +6,17 @@ import Image from "next/image";
 import { Button } from "@/components/ui/button";
 import { Wordmark } from "./Wordmark";
 
-// Marketing top bar — single line, ≤72px. Mono "dhizume" wordmark (live pulse)
+// Marketing top bar — single line, 64px. Mascot "dhizume" wordmark (live pulse)
 // left; in-page anchors + "sign in" + a single "get started" CTA right. Anchor
 // links collapse below md so the bar never wraps.
 //
-// The fold is the living phone over the throne video — keep it chrome-free: the
-// bar is HIDDEN at the very top and slides in once you scroll past ~60% of the
-// first screen, then hides again on the way back up. Reduced-motion just snaps.
-// Each link wears one of dhizume's generated poses as its icon — the menu
-// carries the mascot, not just text.
+// The fold is the dhizume throne wallpaper — keep it chrome-free: the bar is
+// HIDDEN at the very top and slides in once you scroll past ~58% of the first
+// screen, then hides again near the top. Detection uses an IntersectionObserver
+// on a self-managed sentinel (no scroll listener), so it never re-renders on
+// every frame. Reduced-motion just snaps via the transition collapse in CSS.
+// Each link wears one of dhizume's poses as its icon — the menu carries the
+// mascot, not just text.
 const SECTIONS = [
   { href: "#how", label: "how it works", icon: "/dhizume/icons/wave.png" },
   { href: "#pricing", label: "pricing", icon: "/dhizume/icons/point.png" },
@@ -25,15 +27,33 @@ export function Nav() {
   const [shown, setShown] = useState(false);
 
   useEffect(() => {
-    const onScroll = () => setShown(window.scrollY > window.innerHeight * 0.6);
-    onScroll(); // sync on mount in case the page loads already scrolled
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    // a 1px sentinel ~58% down the first screen; once it scrolls above the
+    // viewport the nav appears. IntersectionObserver, not a scroll handler.
+    const sentinel = document.createElement("div");
+    sentinel.setAttribute("aria-hidden", "true");
+    Object.assign(sentinel.style, {
+      position: "absolute",
+      top: "58vh",
+      left: "0",
+      width: "1px",
+      height: "1px",
+      pointerEvents: "none",
+    });
+    document.body.appendChild(sentinel);
+    const io = new IntersectionObserver(
+      ([entry]) => setShown(!entry.isIntersecting),
+      { threshold: 0 },
+    );
+    io.observe(sentinel);
+    return () => {
+      io.disconnect();
+      sentinel.remove();
+    };
   }, []);
 
   return (
     <header
-      className={`fixed inset-x-0 top-0 z-40 border-b border-border/70 bg-canvas/70 backdrop-blur-xl transition-[transform,opacity] duration-300 ease-out ${
+      className={`fixed inset-x-0 top-0 z-40 border-b border-border/60 bg-canvas/70 backdrop-blur-xl transition-[transform,opacity] duration-300 ease-out ${
         shown ? "translate-y-0 opacity-100" : "pointer-events-none -translate-y-full opacity-0"
       }`}
     >

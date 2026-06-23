@@ -40,9 +40,14 @@
   --color-lime-deep: #a23355;
   --color-danger: #ff7a7a;
 
-  /* type — Geist (self-hosted via the geist package; deploy-safe, no network) */
+  /* type
+     - sans/mono: Geist (self-hosted via the geist package; no runtime network)
+     - display: Cormorant Garamond (next/font, latin subset inlined at build) —
+       a high-contrast romantic serif for big headlines only. Generates the
+       `font-display` utility in Tailwind v4. */
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  --font-display: var(--font-cormorant), "Cormorant Garamond", ui-serif, Georgia, "Times New Roman", serif;
 
   /* one corner-radius ladder for the whole page */
   --radius-sm: 0.5rem;

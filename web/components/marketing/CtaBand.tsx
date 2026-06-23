@@ -9,11 +9,11 @@ export function CtaBand() {
     <section className="relative overflow-hidden border-t border-border">
       <div aria-hidden className="aurora absolute inset-x-0 -top-24 mx-auto h-[420px] w-[760px]" />
       <div className="reveal relative mx-auto max-w-3xl px-6 py-28 text-center">
-        <h2 className="text-4xl font-semibold tracking-tight text-ink sm:text-5xl">
-          your assistant is one text away.
+        <h2 className="font-display text-5xl font-medium leading-[1.04] tracking-[-0.01em] text-ink sm:text-6xl">
+          your assistant is <em className="italic text-lime">one text away.</em>
         </h2>
-        <p className="mx-auto mt-5 max-w-md text-lg leading-relaxed text-muted">
-          free to start. it lives in the chat you already use.
+        <p className="mx-auto mt-5 max-w-md text-base leading-relaxed text-muted sm:text-lg">
+          free to start. she lives in the chat you already use.
         </p>
         <div className="mt-9 flex justify-center">
           <Link href="/signin">

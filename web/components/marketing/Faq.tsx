@@ -33,8 +33,8 @@ export function Faq() {
   return (
     <section id="faq" className="mx-auto max-w-3xl px-6 py-24">
       <div className="reveal mb-10">
-        <h2 className="text-3xl font-semibold tracking-tight text-ink sm:text-4xl">
-          questions, answered
+        <h2 className="font-display text-4xl font-medium tracking-[-0.01em] text-ink sm:text-5xl">
+          questions, <em className="italic text-lime">answered.</em>
         </h2>
       </div>
 
