@@ -2,14 +2,32 @@ import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { auth } from "./auth";
+import {
+  listHabits,
+  addHabit,
+  checkToday,
+  renderAppHtml,
+  MAX_TITLE_LEN,
+} from "./lib/habitApp";
 
 const http = httpRouter();
 
-function jsonOk(obj: unknown): Response {
+function jsonOk(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
-    status: 200,
+    status,
     headers: { "content-type": "application/json" },
   });
+}
+
+function jsonError(status: number, message: string): Response {
+  return new Response(JSON.stringify({ error: message }), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function errMsg(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
 }
 
 // Constant-time string compare (avoid leaking the secret via timing).
@@ -206,6 +224,125 @@ http.route({
       // swallow — durable enqueue already succeeded
     }
     return jsonOk({ ok: true });
+  }),
+});
+
+// ---------------------------------------------------------------------------
+// Personalized AI apps (Feature 5). Serve a generated, Turso-backed app at
+// https://<deployment>.convex.site/app/<slug>:
+//   GET  /app/<slug>               → the app page (server-rendered shell)
+//   GET  /app/<slug>/api/habits    → list (public read)
+//   POST /app/<slug>/api/habits        {title}  → add
+//   POST /app/<slug>/api/habits/<id>/check       → check today
+// The slug resolves to its Turso data plane via internal.apps.getBySlug; the
+// data-plane token is read from process.env[app.dbTokenRef] INSIDE the action and
+// never reaches the browser. Path is split on "/app/" then "/": first segment =
+// slug, remainder = the in-app sub-route.
+//
+// ponytail ceiling: the REAL multi-tenant gate is per-user auth on /api/* (deferred
+// — same posture as served/server.py's single-tenant note). v1 reads are public and
+// the only served shape is the habit tracker (see lib/habitApp.ts). Writes are open
+// by default; if APP_WRITE_SECRET is set, they additionally require a const-time
+// X-App-Write-Secret header so an agent/automation path can lock writes without
+// exposing the data token.
+function appPath(request: Request): { slug: string; subpath: string } {
+  const url = new URL(request.url);
+  const rest = url.pathname.slice("/app/".length);
+  const [slug, ...sub] = rest.split("/");
+  return { slug, subpath: sub.join("/") };
+}
+
+http.route({
+  pathPrefix: "/app/",
+  method: "GET",
+  handler: httpAction(async (ctx, request) => {
+    const { slug, subpath } = appPath(request);
+    if (!slug) return new Response("not found", { status: 404 });
+
+    const app = await ctx.runQuery(internal.apps.getBySlug, { slug });
+    if (!app) return new Response("not found", { status: 404 });
+
+    if (subpath === "") {
+      return new Response(renderAppHtml(slug, app.name), {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      });
+    }
+
+    if (subpath === "api/habits") {
+      const token = process.env[app.dbTokenRef];
+      // TODO(deploy): the operator sets the data-plane token out-of-band via
+      // `convex env set <dbTokenRef> <token>` (the Python provisioner does this);
+      // the row only stores the NAME. Missing token → fail closed (never leak it).
+      if (!token) return jsonError(500, "app data token not configured");
+      try {
+        return jsonOk({ habits: await listHabits(app.dbHostname, token) });
+      } catch (e) {
+        return jsonError(502, `database error: ${errMsg(e)}`);
+      }
+    }
+
+    return new Response("not found", { status: 404 });
+  }),
+});
+
+http.route({
+  pathPrefix: "/app/",
+  method: "POST",
+  handler: httpAction(async (ctx, request) => {
+    const { slug, subpath } = appPath(request);
+    if (!slug) return new Response("not found", { status: 404 });
+
+    const app = await ctx.runQuery(internal.apps.getBySlug, { slug });
+    if (!app) return new Response("not found", { status: 404 });
+
+    // Optional write gate (const-time, same primitive as the webhook secrets).
+    const writeSecret = process.env.APP_WRITE_SECRET ?? "";
+    if (writeSecret) {
+      const provided = request.headers.get("X-App-Write-Secret") ?? "";
+      if (!safeEqual(provided, writeSecret)) {
+        return new Response("unauthorized", { status: 401 });
+      }
+    }
+
+    const token = process.env[app.dbTokenRef];
+    if (!token) return jsonError(500, "app data token not configured");
+
+    if (subpath === "api/habits") {
+      let body: any;
+      try {
+        body = await request.json();
+      } catch {
+        return jsonError(400, "body is not valid JSON");
+      }
+      // Trust-boundary validation: title required, non-empty, bounded.
+      const title = typeof body?.title === "string" ? body.title.trim() : "";
+      if (!title) return jsonError(400, "title is required and must be a non-empty string");
+      if (title.length > MAX_TITLE_LEN) return jsonError(400, `title too long (max ${MAX_TITLE_LEN})`);
+      try {
+        return jsonOk(await addHabit(app.dbHostname, token, title), 201);
+      } catch (e) {
+        return jsonError(502, `database error: ${errMsg(e)}`);
+      }
+    }
+
+    const checkMatch = subpath.match(/^api\/habits\/(\d+)\/check$/);
+    if (checkMatch) {
+      // Trust-boundary validation: id must be a positive integer.
+      const habitId = Number(checkMatch[1]);
+      if (!Number.isInteger(habitId) || habitId <= 0) {
+        return jsonError(400, "habit id must be a positive integer");
+      }
+      try {
+        const res = await checkToday(app.dbHostname, token, habitId);
+        if (!res) return jsonError(404, "no such habit");
+        return jsonOk(res);
+      } catch (e) {
+        return jsonError(502, `database error: ${errMsg(e)}`);
+      }
+    }
+
+    return new Response("not found", { status: 404 });
   }),
 });
 

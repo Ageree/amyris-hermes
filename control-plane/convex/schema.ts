@@ -175,4 +175,23 @@ export default defineSchema({
     .index("by_desired_status", ["desired", "status"])  // reconcile loop
     .index("by_status_heartbeat", ["status", "heartbeatAt"]) // health + idle scan
     .index("by_host_status", ["hostVm", "status"]),     // bin-pack / drain a host
+
+  // Personalized AI apps (Feature 5). One row per generated app maps a public slug to
+  // its Turso data plane; the /app/<slug> httpAction (http.ts) resolves it and serves
+  // the app. SECURITY: dbTokenRef is the env-var NAME of the data-plane token, NEVER
+  // the token itself (same discipline as agentInstances.workerSecretRef) — the token
+  // is read from process.env[dbTokenRef] at request time and never reaches the client.
+  apps: defineTable({
+    userId: v.id("users"),
+    slug: v.string(),          // public, charset-validated on register (by_slug = serving key)
+    name: v.string(),
+    dbHostname: v.string(),    // Turso db data-plane host (https://<host>/v2/pipeline)
+    dbName: v.string(),
+    group: v.string(),
+    tables: v.string(),        // JSON manifest of the app's tables (provisioner output)
+    dbTokenRef: v.string(),    // env-var NAME of the Turso data-plane token (never the token)
+    createdAt: v.number(),
+  })
+    .index("by_slug", ["slug"])   // webhook/serve lookup (the unique serving key)
+    .index("by_user", ["userId"]), // list a user's apps
 });

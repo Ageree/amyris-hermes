@@ -17,6 +17,7 @@ import type * as app_channels from "../app/channels.js";
 import type * as app_tiers from "../app/tiers.js";
 import type * as app_upgrade from "../app/upgrade.js";
 import type * as app_usage from "../app/usage.js";
+import type * as apps from "../apps.js";
 import type * as auth from "../auth.js";
 import type * as billing_grant from "../billing/grant.js";
 import type * as billing_provider from "../billing/provider.js";
@@ -50,6 +51,7 @@ declare const fullApi: ApiFromModules<{
   "app/tiers": typeof app_tiers;
   "app/upgrade": typeof app_upgrade;
   "app/usage": typeof app_usage;
+  apps: typeof apps;
   auth: typeof auth;
   "billing/grant": typeof billing_grant;
   "billing/provider": typeof billing_provider;
