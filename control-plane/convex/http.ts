@@ -214,6 +214,18 @@ http.route({
       userNumber,
       text,
     });
+    // Eve-core cutover (spec §2.1, Shape A): when enabled, kick the in-Convex Eve
+    // drainer instead of waiting on the legacy Python worker. Off by default
+    // (EVE_DRAINER_ENABLED unset) so this is dormant until the operator flips it and
+    // stops the Python worker. Best-effort schedule — the durable enqueue already
+    // happened, so a scheduling hiccup just leaves the row for the next kick/worker.
+    if (process.env.EVE_DRAINER_ENABLED === "1") {
+      try {
+        await ctx.scheduler.runAfter(0, internal.agent.drainOne, {});
+      } catch {
+        // swallow — row is durably queued; a later inbound (or reaper) re-kicks it
+      }
+    }
     // Cold-start (see Sendblue branch): flip this tenant's container desired-running.
     try {
       await ctx.runMutation(internal.fleet.requestInstanceInternal, {
