@@ -19,7 +19,7 @@
 
 1. **AgentPhone не звонит в РФ (+7).** Вендор выдаёт номера **только US/CA**, международный исходящий не документирован/не тарифицирован — я не стал звонить вслепую (безопасность). Плюс 0 русских голосов (язык ru-RU есть, акцент возможно неродной). **Вывод:** для звонков в РФ-заведения AgentPhone сегодня не годится; реалистичнее РФ-локальный телефонный провайдер или handoff (ты подтверждаешь бронь сам). Модуль готов — нужен либо другой провайдер, либо твой «go» на тест международного плеча.
 2. **Eve — живой M3: ЗАКРЫТО (через OpenRouter).** Ядро отвечает живьём end-to-end (см. таблицу + `eve-core-live-echo.md`) — я добавил в `agent.ts` fallback на OpenRouter-креды (spec §7 разрешает), т.к. Vercel-токен на машине **протух** (`invalidToken`). Осталось операторское: `vercel login`/`eve link` чтобы гонять M3 через **AI Gateway** (keyless OIDC) вместо OpenRouter, + деплой на Vercel. `remember`/`recall` нужен Convex `CONVEX_URL`+`WORKER_SECRET` для live round-trip.
-3. **Feature 5 — сервинг на Convex.** Python-провижинер + генератор + рабочий пример (served-app) готовы и доказаны. Остался TS-glue для отдачи приложений с `*.convex.site/app/<slug>` (таблица `apps` + http-route + ~40 строк pipeline-fetch) — расписан в `docs/overnight/INTEGRATION.md`, не реализован (был вне scope ядра).
+3. **Feature 5 — сервинг на Convex: ПОСТРОЕНО (gate #3 закрыт по коду).** TS-glue реализован и закоммичен (`2e4a6ab`): таблица `apps` (токен хранится как имя env-var, не сам токен) + `/app/<slug>` http-route (токен читается из `process.env` внутри action, не уходит в браузер) + dependency-free TS-порт libSQL-клиента (codec self-check PASS) + habit-tracker рендер. `tsc --noEmit` чистый. **Деплой = операторский** (в worktree нет Convex-env): `convex env set <dbTokenRef> <token>` + `convex dev --once` (аддитивно — новая таблица + роут, существующие флоу не трогаются).
 
 ## Безопасность / ротация ключей (СРОЧНО)
 - **Ротни:** Turso platform-токен и AgentPhone `sk_live_…` — оба были вставлены в чат. Лежат chmod-600 в `$JOB/tmp/secrets.env`, в репозиторий НЕ попали.
@@ -35,6 +35,6 @@
 ## Дальше (по твоему «go»)
 1. Снять гейт спеки → закоммитить worktree.
 2. `eve link` + живой M3-echo + деплой ядра на Vercel (parallel-run со старым Hermes за kill-switch).
-3. Реализовать TS-glue сервинга Feature 5 на Convex.
+3. ~~Реализовать TS-glue сервинга Feature 5~~ ✅ сделано (`2e4a6ab`) → осталось задеплоить: `convex env set <dbTokenRef>` + `convex dev --once`.
 4. Решить судьбу AgentPhone (другой провайдер / handoff).
 5. browser_order: перевести драйвер на browser-use cloud + RU-прокси (sub-project #2) — локальные шаблоны переиспользуются.
