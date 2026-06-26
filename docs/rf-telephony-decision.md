@@ -73,6 +73,7 @@
 | **Plivo** | `?` gated | ✗ | **✗** | ✅; BYO 🟡 | премиум USD | **✗** | ✅ | **ДИСКВАЛ.** |
 | **Bland.ai** | **✗** (нет BYO-транка) | 🟡 | ✗ | ✅; BYO **✗** | $0.09/мин USD | **✗** | ✅ | **ДИСКВАЛ.** (= AgentPhone) |
 | **Synthflow** | **✗** (Twilio/Telnyx) | 🟡 BYO | ✗ | ✅; BYO 🟡 | USD sub+мин | **✗** | ✅ | **ДИСКВАЛ.** |
+| **autocalls.ai** (нашёл оператор) | 🟡 только BYO-транк | 🟡 их TTS+voice-clone | 🟡 свой mobile/транк | ✅ API+MCP; **BYO-LLM ✗** (фикс GPT-4o-mini/4.1-mini/realtime+Gemini, M3 нельзя) | $0.09–0.20/мин USD | **✗** зап. SaaS, карта/Stripe | ✅ транскрипты/webhooks | **ДИСКВАЛ.** (Vapi-класс) |
 | **AudioCodes Voca** | `?`/✗ Teams-only | ✗ | ✗ | `?` инбаунд | enterprise USD | **✗** Teams не в RU | ✅ | **ДИСКВАЛ.** (не туда) |
 | **Yandex SpeechKit** | н/п (голос-слой) | ✅✅ лучший RU | — | STT/TTS API, не дайлер | копейки/звонок | ✅ RU | это и есть STT | **Голос-слой** |
 | **Sber SaluteSpeech** | н/п | ✅ RU | — | STT/TTS, не дайлер | free tier → 600₽/мес | ✅ RU | STT | **Голос-слой** |
@@ -81,6 +82,19 @@
 `*` Vapi/Retell: +7 не от их дефолтной телефонии (Twilio/Telnyx — блок), а ТОЛЬКО от
 прицепленного российского SIP-транка (Novofon/Exolve). Сама платформа для RU-оператора по
 оплате проблемна (USD/US-KYC).
+
+**autocalls.ai** (проверено вживую 2026-06-26, оператор прислал): тот же Vapi-класс — западная
+no-code/API платформа AI-агентов. (1) **РФ-номеров нет** — страница `/country/russia` прямо: «We
+don't currently offer dedicated Russia phone numbers… you can integrate your existing Russia
+numbers from any VoIP provider using our SIP trunk integration» → +7 ТОЛЬКО через свой РФ-транк
+(Exolve и т.п.), он не заменяет победителя, а садится поверх. (2) **BYO-LLM нет** — `GET
+/api-reference/assistants/get-models` отдаёт фикс-список `GPT-4o-mini`/`GPT-4.1-mini`/
+`GPT-4o-realtime` (+рекоменд. Gemini Flash / GPT-5 Realtime); MiniMax-M3 воткнуть нельзя → разговор
+шёл бы не на M3 (есть MCP-tools/custom-tools, но диалоговый LLM — их). (3) **Оплата** usage-based в
+$, западный SaaS (ISO/GDPR/HIPAA) — RU-карта почти наверняка не пройдёт. **Вывод: ДИСКВАЛ.** для
+наших ограничений (M3-мозг + RU-оплата + санкц.-чистота); годится лишь если ослабить «M3 в звонке»
+и иметь не-RU платёжку — тогда это удобный оркестратор поверх РФ-транка.
+Источники: https://autocalls.ai/country/russia · https://docs.autocalls.ai/api-reference/assistants/get-models.md · https://docs.autocalls.ai/api-reference/sip-trunks/create-sip-trunk.md
 
 ---
 
