@@ -11,14 +11,14 @@
 | **4. Поиск + автоотклик** (browser-use) | ✅ | hh.ru → «python разработчик» (1279 вакансий) → вакансия (АО ССПБ) → «Откликнуться» → **СТОП на вводе телефона/авторизации, отклик НЕ отправлен**. `docs/overnight/qa/autoapply_hh_apply-wall.png` |
 | **5. Персональные ИИ-приложения** (Turso) | ✅ | **Playwright-видео**: трекер привычек «мои привычки»; отметка **пережила перезагрузку из Turso** (реальная БД, не localStorage). `features/turso_apps/served/qa/video/habit-tracker-qa.webm` |
 | **3. Бронь/звонки в места** (AgentPhone) | ⚠️ ГЕЙТ | API-self-check PASS (создание/удаление агента, dry-run брони, double-gate на реальный звонок). **Реальный звонок не делал** — см. ниже. `docs/overnight/qa/agentphone_selfcheck.txt` |
-| **Ядро → Eve** | ✅ | `npx eve@latest init` → `agent/`, модель `minimax/minimax-m3`, 4 тула (web_search/remember/recall/browser_order), RU-инструкции. `eve build` = **0 ошибок, 0 предупреждений, 4 тула обнаружены**; web_search unit-чек PASS. |
+| **Ядро → Eve** | ✅ **LIVE** | `agent/`, модель `minimax/minimax-m3`, 4 тула, RU-инструкции. `eve build` чистый + **живой end-to-end прогон через `eve dev`**: спросил «когда последний запуск SpaceX?» → ядро вызвало **web_search→Exa** → ответило по-русски с датой (10 дек 2025). `docs/overnight/qa/eve-core-live-echo.md` |
 
 Как посмотреть видео/GIF: открой файлы из `docs/overnight/qa/` и `features/turso_apps/served/qa/video/`. Скриншоты ключевых моментов — рядом (`*.png`, `qa/shots/`).
 
 ## Что требует ТВОЕГО решения (3 гейта)
 
 1. **AgentPhone не звонит в РФ (+7).** Вендор выдаёт номера **только US/CA**, международный исходящий не документирован/не тарифицирован — я не стал звонить вслепую (безопасность). Плюс 0 русских голосов (язык ru-RU есть, акцент возможно неродной). **Вывод:** для звонков в РФ-заведения AgentPhone сегодня не годится; реалистичнее РФ-локальный телефонный провайдер или handoff (ты подтверждаешь бронь сам). Модуль готов — нужен либо другой провайдер, либо твой «go» на тест международного плеча.
-2. **Eve — живой ответ M3.** Сборка чистая, но живой echo через AI Gateway требует `eve link` (Vercel OIDC) — на этой машине нет Vercel-токена. Это 1 операторский шаг (или дай токен — добью live-echo + деплой).
+2. **Eve — живой M3: ЗАКРЫТО (через OpenRouter).** Ядро отвечает живьём end-to-end (см. таблицу + `eve-core-live-echo.md`) — я добавил в `agent.ts` fallback на OpenRouter-креды (spec §7 разрешает), т.к. Vercel-токен на машине **протух** (`invalidToken`). Осталось операторское: `vercel login`/`eve link` чтобы гонять M3 через **AI Gateway** (keyless OIDC) вместо OpenRouter, + деплой на Vercel. `remember`/`recall` нужен Convex `CONVEX_URL`+`WORKER_SECRET` для live round-trip.
 3. **Feature 5 — сервинг на Convex.** Python-провижинер + генератор + рабочий пример (served-app) готовы и доказаны. Остался TS-glue для отдачи приложений с `*.convex.site/app/<slug>` (таблица `apps` + http-route + ~40 строк pipeline-fetch) — расписан в `docs/overnight/INTEGRATION.md`, не реализован (был вне scope ядра).
 
 ## Безопасность / ротация ключей (СРОЧНО)
