@@ -1,0 +1,16 @@
+# AgentPhone API-path self-check (safe: NO money, NO calls) — 2026-06-26T00:51:16Z
+
+== AgentPhone self-check (safe: no money, no calls) ==
+[1] usage OK — plan=free numbers={'used': 1, 'limit': 10, 'remaining': 9} voiceMinutes/mo=250
+[2] voices OK — 305 voices, providers=['cartesia', 'elevenlabs', 'fish_audio', 'minimax', 'openai', 'platform', 'playht', 'qwen3']
+    Russian-labeled voices: 0 (accents present: ['American', 'American English', 'Australian', 'Brazilian', 'British', 'Chinese', 'English', 'French', 'German', 'Indian', 'Japanese', 'Mexican', 'Southern American', 'Spanish'])
+[3] create_agent OK — id=cmqu7towf03hx13w0c6qz8xzy name=eve-selfcheck-1782435078 lang=ru-RU voiceMode=hosted voice=minimax-Daniel
+[4] list_agents OK — 2 agents, new one present
+[5] delete_agent OK — agent gone
+[6] book_table(dry_run=True) OK — composed payload, NO call placed
+    toNumber=+74951234567
+    systemPrompt[:90]='Ты — вежливый русскоязычный ассистент, который звонит в ресторан «Кафе Пушкинъ», чтобы заб'
+    initialGreeting[:80]='Здравствуйте! Я звоню, чтобы забронировать столик в ресторане «Кафе Пушкинъ» на '
+[guard] OK — dry_run=False without confirm_real_call is refused
+
+ALL CHECKS PASSED

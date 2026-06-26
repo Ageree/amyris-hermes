@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>мои привычки</title>
+  <style>
+    :root {
+      --bg: #f6f5f3;
+      --card: #ffffff;
+      --ink: #1a1a1a;
+      --muted: #8a8a8a;
+      --line: #e7e5e1;
+      --accent: #2f6f4f;
+      --accent-soft: #e6f0ea;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap {
+      max-width: 560px;
+      margin: 0 auto;
+      padding: 56px 20px 80px;
+    }
+    header h1 {
+      font-size: 30px;
+      font-weight: 650;
+      letter-spacing: -0.02em;
+      margin: 0 0 4px;
+    }
+    header p {
+      margin: 0 0 28px;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    form {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 26px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 13px 15px;
+      font-size: 15px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      outline: none;
+      transition: border-color .15s;
+    }
+    input[type="text"]:focus { border-color: var(--accent); }
+    button {
+      font-family: inherit;
+      cursor: pointer;
+      border: none;
+      border-radius: 12px;
+      font-size: 15px;
+    }
+    .add-btn {
+      padding: 13px 20px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 550;
+    }
+    .add-btn:active { transform: translateY(1px); }
+    ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+    li {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px 18px;
+    }
+    .habit-main { min-width: 0; }
+    .habit-title { font-size: 16px; font-weight: 550; }
+    .habit-meta { font-size: 13px; color: var(--muted); margin-top: 3px; }
+    .check-btn {
+      flex-shrink: 0;
+      padding: 10px 16px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 550;
+      white-space: nowrap;
+    }
+    .check-btn.done {
+      background: var(--accent);
+      color: #fff;
+    }
+    .check-btn:disabled { cursor: default; opacity: 1; }
+    .empty {
+      text-align: center;
+      color: var(--muted);
+      padding: 40px 0;
+      font-size: 15px;
+    }
+    .err {
+      background: #fdecea;
+      color: #a3271a;
+      border: 1px solid #f4c7bf;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 14px;
+      margin-bottom: 18px;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>мои привычки</h1>
+      <p>отмечай каждый день — данные хранятся в твоей базе</p>
+    </header>
+
+    <div class="err" id="err"></div>
+
+    <form id="add-form">
+      <input type="text" id="title" placeholder="новая привычка…" autocomplete="off" maxlength="200">
+      <button type="submit" class="add-btn">добавить</button>
+    </form>
+
+    <ul id="list"></ul>
+    <div class="empty" id="empty" hidden>пока пусто. добавь первую привычку выше.</div>
+  </div>
+
+  <script>
+    const listEl = document.getElementById("list");
+    const emptyEl = document.getElementById("empty");
+    const errEl = document.getElementById("err");
+    const form = document.getElementById("add-form");
+    const titleInput = document.getElementById("title");
+
+    function showError(msg) {
+      errEl.textContent = msg;
+      errEl.style.display = "block";
+    }
+    function clearError() { errEl.style.display = "none"; }
+
+    async function api(path, opts) {
+      const res = await fetch(path, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ("ошибка " + res.status));
+      return data;
+    }
+
+    function render(habits) {
+      listEl.innerHTML = "";
+      emptyEl.hidden = habits.length > 0;
+      for (const h of habits) {
+        const li = document.createElement("li");
+        li.dataset.id = h.id;
+
+        const main = document.createElement("div");
+        main.className = "habit-main";
+        const t = document.createElement("div");
+        t.className = "habit-title";
+        t.textContent = h.title;
+        const meta = document.createElement("div");
+        meta.className = "habit-meta";
+        meta.textContent = h.checks === 0 ? "ещё ни разу" : ("отмечено раз: " + h.checks);
+        main.append(t, meta);
+
+        const btn = document.createElement("button");
+        btn.className = "check-btn" + (h.done_today ? " done" : "");
+        btn.textContent = h.done_today ? "готово ✓" : "готово сегодня";
+        btn.disabled = h.done_today;
+        btn.addEventListener("click", () => check(h.id, btn));
+
+        li.append(main, btn);
+        listEl.append(li);
+      }
+    }
+
+    async function load() {
+      try {
+        clearError();
+        const data = await api("/api/habits");
+        render(data.habits);
+      } catch (e) { showError(e.message); }
+    }
+
+    async function check(id, btn) {
+      try {
+        clearError();
+        btn.disabled = true;
+        await api("/api/habits/" + id + "/check", { method: "POST" });
+        await load();
+      } catch (e) { showError(e.message); btn.disabled = false; }
+    }
+
+    form.addEventListener("submit", async (ev) => {
+      ev.preventDefault();
+      const title = titleInput.value.trim();
+      if (!title) return;
+      try {
+        clearError();
+        await api("/api/habits", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title }),
+        });
+        titleInput.value = "";
+        await load();
+        titleInput.focus();
+      } catch (e) { showError(e.message); }
+    });
+
+    load();
+  </script>
+</body>
+</html>
