@@ -1,0 +1,64 @@
+// Self-check for the browser-use cloud client: asserts the request SHAPE (endpoint, auth
+// header, profileId/customProxy wiring) and response parsing against a FAKE local server —
+// no real BU account/key needed. Run: node control-plane/drainer/bucloud.test.mjs
+import assert from "node:assert";
+import http from "node:http";
+
+// Fake BU cloud: records each request, returns canned responses by method+path.
+const seen = [];
+const server = http.createServer((req, res) => {
+  let body = "";
+  req.on("data", (d) => (body += d));
+  req.on("end", () => {
+    seen.push({ method: req.method, path: req.url, auth: req.headers["x-browser-use-api-key"], body: body ? JSON.parse(body) : null });
+    res.setHeader("content-type", "application/json");
+    if (req.method === "POST" && req.url === "/profiles") return res.end(JSON.stringify({ id: "prof-123" }));
+    if (req.method === "POST" && req.url === "/browsers") {
+      return res.end(JSON.stringify({ id: "sess-9", cdpUrl: "https://cdp.browser-use.com/sess-9", liveUrl: "https://live.browser-use.com/sess-9?ws=x" }));
+    }
+    if (req.method === "PATCH" && /^\/browsers\//.test(req.url)) return res.end(JSON.stringify({ ok: true }));
+    res.statusCode = 404; res.end("{}");
+  });
+});
+
+await new Promise((r) => server.listen(0, "127.0.0.1", r));
+const port = server.address().port;
+process.env.BU_CLOUD_BASE = `http://127.0.0.1:${port}`;
+process.env.BU_CLOUD_API_KEY = "test-key";
+// import AFTER env is set (module reads BU_BASE/BU_KEY at load).
+const { createProfile, startBrowser, stopBrowser, buildBrowserBody } = await import("./bucloud.mjs");
+
+// 1. createProfile → POST /profiles {name}, auth header carried, returns id.
+const pid = await createProfile("user-+79990000000");
+assert.equal(pid, "prof-123");
+let last = seen.at(-1);
+assert.equal(last.method, "POST"); assert.equal(last.path, "/profiles");
+assert.equal(last.auth, "test-key", "X-Browser-Use-API-Key must be sent");
+assert.equal(last.body.name, "user-+79990000000");
+
+// 2. startBrowser WITH a BYO RU proxy → customProxy in body, profileId carried, parses cdp+live.
+const s = await startBrowser({ profileId: pid, proxy: { host: "ru.modem", port: 8080, username: "u", password: "p" }, timeoutSec: 300 });
+assert.deepEqual({ id: s.id, cdpUrl: s.cdpUrl }, { id: "sess-9", cdpUrl: "https://cdp.browser-use.com/sess-9" });
+assert.ok(s.liveUrl.startsWith("https://live.browser-use.com/"), "liveUrl for handoff");
+last = seen.at(-1);
+assert.equal(last.path, "/browsers");
+assert.equal(last.body.profileId, "prof-123");
+assert.deepEqual(last.body.customProxy, { host: "ru.modem", port: 8080, username: "u", password: "p" });
+assert.equal(last.body.timeout, 300);
+assert.ok(!("proxyCountryCode" in last.body), "BYO proxy → no native country code");
+
+// 3. buildBrowserBody is pure & branches correctly (proxy vs no-proxy).
+assert.deepEqual(buildBrowserBody({ profileId: "p", proxy: { host: "h", port: 1 }, timeoutSec: 600 }),
+  { timeout: 600, profileId: "p", customProxy: { host: "h", port: 1 } });
+const noProxy = buildBrowserBody({ profileId: "p", proxy: null, timeoutSec: 600 });
+assert.equal(noProxy.proxyCountryCode, null);
+assert.ok(!("customProxy" in noProxy), "no proxy → no customProxy");
+
+// 4. stopBrowser → PATCH /browsers/{id} {action:"stop"}.
+await stopBrowser("sess-9");
+last = seen.at(-1);
+assert.equal(last.method, "PATCH"); assert.equal(last.path, "/browsers/sess-9");
+assert.equal(last.body.action, "stop");
+
+server.close();
+console.log("bucloud self-check PASS");
