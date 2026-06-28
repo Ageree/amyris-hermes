@@ -90,6 +90,7 @@ echo "======================================================================"
 # ---------------------------------------------------------------------------
 _info "1. copy controller code + env to VM /tmp"
 # Only the runtime .py files (skip tests/caches) — copy the dir, prune on the VM.
+ssh_vm "rm -rf /tmp/hermes-controller-src /tmp/controller.env.staged"
 scp_vm "$CONTROLLER_SRC" "/tmp/hermes-controller-src"
 scp_vm "$ENV_FILE" "/tmp/controller.env.staged"
 
@@ -98,10 +99,12 @@ scp_vm "$ENV_FILE" "/tmp/controller.env.staged"
 # ---------------------------------------------------------------------------
 _info "2. install code, env (0600), and systemd unit"
 ssh_vm "set -e; \
+    src=/tmp/hermes-controller-src; \
+    if [ -d /tmp/hermes-controller-src/controller ]; then src=/tmp/hermes-controller-src/controller; fi; \
     sudo rm -rf /opt/hermes-fleet/controller && \
     sudo mkdir -p /opt/hermes-fleet/controller && \
-    sudo cp /tmp/hermes-controller-src/*.py /opt/hermes-fleet/controller/ && \
-    sudo cp /tmp/hermes-controller-src/hermes-controller.service /etc/systemd/system/hermes-controller.service && \
+    sudo cp \"\$src\"/*.py /opt/hermes-fleet/controller/ && \
+    sudo cp \"\$src\"/hermes-controller.service /etc/systemd/system/hermes-controller.service && \
     sudo install -o hermes-fleet -g hermes-fleet -m 0600 /tmp/controller.env.staged /etc/hermes-fleet/controller.env && \
     sudo chown -R hermes-fleet:hermes-fleet /opt/hermes-fleet/controller && \
     rm -f /tmp/controller.env.staged && rm -rf /tmp/hermes-controller-src"
