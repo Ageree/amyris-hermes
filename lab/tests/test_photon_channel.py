@@ -14,10 +14,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skeleton"))
 
 from channels.base import Channel, OutboundResult  # noqa: E402
+from channels._channel_utils import is_remote as _is_remote, poll_to_text as _poll_to_text  # noqa: E402
 from channels.photon_channel import (  # noqa: E402
     PhotonChannel,
-    _is_remote,
-    _poll_to_text,
     _port_from_base,
 )
 from channels.rich import (  # noqa: E402

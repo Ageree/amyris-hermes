@@ -34,7 +34,7 @@ import re
 import subprocess
 from typing import Optional
 
-_THINK = re.compile(r"<think>.*?</think>", re.DOTALL)
+from text_cleaning import THINK_RE as _THINK
 # CSI / OSC ANSI escape sequences (colors, cursor moves, hyperlinks).
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[=>]")
 # Hermes leaks operational notices to stdout even in --quiet mode (e.g.

@@ -56,8 +56,5 @@ export const channelValidator = v.union(
   v.literal("telegram"),
 );
 
-export const tierValidator = v.union(
-  v.literal("free"),
-  v.literal("pro"),
-  v.literal("max"),
-);
+// Re-exported from billing/tiers.ts — single source of truth for the tier union.
+export { tierValidator } from "../billing/tiers";

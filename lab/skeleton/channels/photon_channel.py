@@ -57,6 +57,7 @@ from channels.rich import (
     TextPart,
     VoicePart,
 )
+from channels._channel_utils import is_remote as _is_remote, poll_to_text as _poll_to_text
 
 log = logging.getLogger("worker.channels.photon")
 
@@ -405,37 +406,6 @@ class PhotonChannel:
 # Module helpers (also useful standalone / in tests)
 
 
-def _is_remote(src: str) -> bool:
-    """True only for a safe http(s) URL — local paths and internal networks refused.
-
-    Guards against both local-file exfiltration (non-http schemes / bare paths) AND
-    SSRF via prompt-injected media URLs targeting cloud metadata or internal services.
-    A numeric-IP host in a private/loopback/link-local range is blocked, as are
-    well-known metadata hostnames. Hostname-based DNS rebinding is NOT defended here
-    (that requires network-level egress filtering); this blocks the obvious vectors.
-    """
-    if not isinstance(src, str):
-        return False
-    if not (src.startswith("http://") or src.startswith("https://")):
-        return False
-    host = urlsplit(src).hostname or ""
-    if not host:
-        return False
-    # Block well-known internal/metadata hostnames.
-    _blocked = ("localhost", "metadata.google.internal")
-    if host in _blocked or host.endswith(".internal"):
-        return False
-    # Block numeric IPs in private/reserved/loopback/link-local ranges.
-    import ipaddress
-    try:
-        addr = ipaddress.ip_address(host)
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
-            return False
-    except ValueError:
-        pass  # not a bare IP — hostname is fine (DNS rebinding defended at network layer)
-    return True
-
-
 def _url_has_extension(src: str) -> bool:
     """True if the URL PATH's last segment has a file extension (e.g. '/cat.png').
 
@@ -455,13 +425,6 @@ def _ext_for_mime(mime: str) -> Optional[str]:
     type just yields None and we skip the synthetic name (no hand-rolled table).
     """
     return mimetypes.guess_extension(mime) or None
-
-
-def _poll_to_text(part: PollPart) -> str:
-    """Degrade a PollPart to a numbered text list (iMessage has no native poll)."""
-    lines = [part.question]
-    lines.extend(f"{i}. {opt}" for i, opt in enumerate(part.options, 1))
-    return "\n".join(lines)
 
 
 def _port_from_base(base: str) -> Optional[int]:
