@@ -107,11 +107,30 @@ export async function redeemTelegram(
     { workerSecret: string; token: string; address: string },
     { ok: boolean; userId: string | null; idempotent?: boolean; reason?: string }
   >("testing:testRedeemTelegram");
-  return client.mutation(ref, {
+  const args = {
     workerSecret: workerSecret(),
     token,
     address,
-  });
+  };
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      return await client.mutation(ref, args);
+    } catch (error) {
+      if (!isTransientConvexFetch(error) || attempt === 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    }
+  }
+
+  throw new Error("unreachable: redeemTelegram retry loop exhausted");
+}
+
+function isTransientConvexFetch(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error);
+  const cause = error instanceof Error && "cause" in error ? String(error.cause) : "";
+  return /fetch failed|socket disconnected|ECONNRESET|ETIMEDOUT|EAI_AGAIN|502|503|504/i.test(
+    `${message} ${cause}`,
+  );
 }
 
 /**

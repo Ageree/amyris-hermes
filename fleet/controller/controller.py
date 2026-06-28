@@ -209,6 +209,9 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
             logger.warning("env var %s is not set — container may misbehave", name)
         return v
 
+    bu_name = "".join(c if (c.isalnum() or c in "_-") else "-" for c in user_id) or "tenant"
+    cdp_url = "http://127.0.0.1:9222"
+
     # Model endpoint MUST match the funded key or EVERY model call 401s (Bug C3).
     # The live key is an OpenRouter key (sk-or-*) → openrouter.ai/api/v1, model
     # minimax/minimax-m3; a native MiniMax key → api.minimax.io/v1, MiniMax-M3.
@@ -256,10 +259,12 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
         "EVE_INGRESS_SECRET": _get("EVE_INGRESS_SECRET"),
         "EVE_PORT": str(cfg.eve_port),
         "EVE_URL": f"http://127.0.0.1:{cfg.eve_port}",
-        # order.py attaches to the entrypoint's headless Chrome via CDP (:9222);
-        # the Eve brain does NOT run the old Hermes browser-harness, so no
-        # BU_NAME/BU_CDP_URL/BROWSER_HARNESS_ENABLED here (they were dead).
-        "ORDER_CDP_URL": "http://127.0.0.1:9222",
+        # order.py and browser-harness attach to the same per-user headless
+        # Chrome launched by the entrypoint.
+        "ORDER_CDP_URL": cdp_url,
+        "BU_NAME": bu_name,
+        "BU_CDP_URL": cdp_url,
+        "BROWSER_HARNESS_ENABLED": os.environ.get("BROWSER_HARNESS_ENABLED", "1"),
     }
     # Per-instance Secret Manager ref — injected ONLY when the (not-yet-wired)
     # per-instance-secrets feature is on. The worker reads WORKER_SECRET directly and
