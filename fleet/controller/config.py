@@ -70,6 +70,12 @@ class ControllerConfig:
     # Fleet image
     image: str
 
+    # Eve in-container server port. The entrypoint binds the Eve Nitro server
+    # here (127.0.0.1); the controller derives EVE_URL=http://127.0.0.1:<eve_port>
+    # for the in-container scoped poller. EVE_INGRESS_SECRET is a secret and is
+    # read from env at use-time (never stored on this object).
+    eve_port: int
+
     # Host VMs (comma-separated, parsed to a tuple)
     hosts: tuple[str, ...]
 
@@ -106,6 +112,7 @@ class ControllerConfig:
             "gcp_region": self.gcp_region,
             "gcs_bucket": self.gcs_bucket,
             "image": self.image,
+            "eve_port": self.eve_port,
             "hosts": list(self.hosts),
             "poll_interval_s": self.poll_interval_s,
             "stale_ttl_s": self.stale_ttl_s,
@@ -140,6 +147,7 @@ class ControllerConfig:
             gcp_region=_optional("GCP_REGION", "us-central1"),
             gcs_bucket=_optional("GCS_BUCKET", "hermes-fleet-state"),
             image=image,
+            eve_port=_int_env("EVE_PORT", 4123),
             hosts=hosts,
             poll_interval_s=_float_env("POLL_INTERVAL_S", 3.0),
             stale_ttl_s=_float_env("STALE_TTL_S", 240.0),

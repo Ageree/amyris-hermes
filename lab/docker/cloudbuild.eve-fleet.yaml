@@ -1,0 +1,109 @@
+# =============================================================================
+# cloudbuild.eve-fleet.yaml — GCP Cloud Build config for the EVE fleet image
+#
+# Adapted from cloudbuild.fleet.yaml. Builds the per-tenant container that runs
+# the Eve brain (node /app/eve/.output/server/index.mjs) + headless Chrome-CDP +
+# order.py + the scoped Convex poller — i.e. the OLD Hermes fleet shape with the
+# brain swapped Hermes→Eve. Unlike the Hermes image, this one bakes Eve's
+# self-contained `.output` (no Hermes clone), so there are NO _HERMES_REF /
+# _INSTALL_HERMES build-args.
+#
+# Usage (operator-run, NOT executed by CI automatically):
+#   gcloud builds submit --config lab/docker/cloudbuild.eve-fleet.yaml \
+#       --substitutions SHORT_SHA=$(git rev-parse --short HEAD) .
+#
+# Substitutions
+# -------------
+#   $PROJECT_ID  — auto-populated by Cloud Build
+#   $SHORT_SHA   — git short SHA, auto-populated by Cloud Build triggers;
+#                  pass manually for `gcloud builds submit` calls
+#   $_REGION     — Artifact Registry region (default us-central1)
+#   $_AR_REPO    — Artifact Registry repo (default saved-content)
+#
+# Registry path: ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet
+# Two tags are pushed: :<SHORT_SHA> (immutable, for rollbacks) and :latest
+# (floating, for convenience).  Deployments should pin the SHA tag.
+# =============================================================================
+
+substitutions:
+  _REGION: "us-central1"
+  # The REAL Artifact Registry repo (shared with the Hermes fleet image).
+  # Parameterized so a brand-new PROJECT_ID can override region/repo without edits.
+  _AR_REPO: "saved-content"
+  # SHORT_SHA is injected automatically by Cloud Build triggers; you must pass
+  # it explicitly for manual `gcloud builds submit` invocations.
+
+steps:
+  # ---------------------------------------------------------------------------
+  # Step 0 — Build Eve's self-contained `.output` from source (reproducible).
+  # `agent/.output` is git-ignored, so a clean checkout has no bundle. `eve build`
+  # runs FULLY OFFLINE (no Vercel/AI-Gateway auth — verified) and writes
+  # `.output/server/index.mjs` into the shared /workspace, which the docker step
+  # below then COPYs. This makes the image reproducible from git, not from a
+  # locally-prebuilt artifact.
+  # ---------------------------------------------------------------------------
+  - name: "node:24-slim"
+    id: "build-eve-output"
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        cd agent
+        npm ci --no-audit --no-fund
+        npm run build
+        test -f .output/server/index.mjs
+    timeout: "600s"
+
+  # ---------------------------------------------------------------------------
+  # Step 1 — Build the Eve fleet image
+  # The in-image test gate (if any) runs as a RUN step inside the build, so a red
+  # gate fails the build here. Build context is the REPO ROOT so the Dockerfile
+  # can COPY agent/.output, the drainer, and order.py.
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "build-eve-fleet-image"
+    waitFor: ["build-eve-output"]
+    args:
+      - build
+      - --file
+      - lab/docker/Dockerfile.eve-fleet
+      # Tag with the immutable SHA first; we'll add :latest in the push step.
+      - --tag
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:$SHORT_SHA"
+      - --tag
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:latest"
+      # Build context is the REPO ROOT so the Dockerfile can COPY agent/.output etc.
+      - .
+    # Give the build enough headroom for apt + pip + node + Eve copy + gate.
+    timeout: "1200s"
+
+  # ---------------------------------------------------------------------------
+  # Step 2 — Push SHA-tagged image (immutable; used for rollbacks)
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-sha-tag"
+    waitFor: ["build-eve-fleet-image"]
+    args:
+      - push
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:$SHORT_SHA"
+
+  # ---------------------------------------------------------------------------
+  # Step 3 — Push :latest (floating; for convenience — pin SHA in deployments)
+  # ---------------------------------------------------------------------------
+  - name: "gcr.io/cloud-builders/docker"
+    id: "push-latest-tag"
+    waitFor: ["build-eve-fleet-image"]
+    args:
+      - push
+      - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:latest"
+
+# Images to register with Cloud Build for vulnerability scanning + provenance.
+images:
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:$SHORT_SHA"
+  - "${_REGION}-docker.pkg.dev/$PROJECT_ID/${_AR_REPO}/hermes-eve-fleet:latest"
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  # Larger machine gives better pip/apt/node parallelism and keeps the build fast.
+  machineType: "E2_HIGHCPU_8"

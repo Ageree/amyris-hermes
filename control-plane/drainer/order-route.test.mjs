@@ -41,4 +41,13 @@ assert.ok(/оплати/.test(formatOrderReply({ ok: true, final_result: "кор
 assert.ok(/рассчитать поездку/.test(formatOrderReply({ ok: false, status: "failed" }, "taxi")));
 assert.ok(/собрать заказ/.test(formatOrderReply({ ok: false, status: "failed" }, "grocery")));
 
+// 7. a blocking `needs` signal becomes a friendly instruction (not the generic failure),
+//    and NEVER leaks a raw signal token like "NEED_LOGIN" to the user.
+const loginReply = formatOrderReply({ ok: false, status: "blocked", needs: "NEED_LOGIN" }, "food");
+assert.ok(/войти в Яндекс/.test(loginReply), "NEED_LOGIN → login instruction");
+assert.ok(!/NEED_LOGIN/.test(loginReply), "must not leak the raw signal token");
+assert.ok(/3-D Secure/.test(formatOrderReply({ ok: false, needs: "NEED_3DS" }, "taxi")));
+// an unknown needs falls through to the honest generic failure.
+assert.ok(/не получилось/.test(formatOrderReply({ ok: false, needs: "WHATEVER" }, "food")));
+
 console.log("order-route self-check PASS");

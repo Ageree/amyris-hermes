@@ -19,6 +19,10 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 
 const CONVEX = (process.env.CONVEX_URL || "").replace(/\/+$/, "");
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
+// Scoped (per-user container) mode: when USER_ID is set, the loop claims ONLY this
+// tenant's rows via messages:claimNextForUser. Unset → the shared Mac drainer claims
+// across all tenants via messages:claimNextAny (behavior unchanged).
+const USER_ID = process.env.USER_ID || "";
 const EVE_URL = (process.env.EVE_URL || "").replace(/\/+$/, "");
 const EVE_SECRET = process.env.EVE_INGRESS_SECRET || "";
 const SB_ID = process.env.SENDBLUE_API_KEY_ID || "";
@@ -488,8 +492,18 @@ function runOrder(service, params) {
   });
 }
 
+// A blocking signal from order.py (`needs`) → a friendly instruction. NEVER leaks the
+// live-view handoff token (that URL is minted by the onboarding step, human-gated).
+const NEEDS_MSG = {
+  NEED_LOGIN: "нужно один раз войти в Яндекс и привязать карту в твоём браузере — пришлю ссылку для входа, и дальше всё соберу сам.",
+  NEED_CARD: "не вижу привязанной карты в Яндексе — добавь карту, и я закончу заказ.",
+  NEED_3DS: "банк просит подтверждение (3-D Secure) — подтверди в приложении банка и скажи «повтори».",
+  WEB_NO_ORDER: "через сайт оформить не вышло — попробую иначе или подскажи детали.",
+};
+
 // Pure: turn an engine result into the user-facing reply (the one branch with logic).
-// A success carries the cart/route + a checkout-deferred note; a failure stays honest.
+// A success carries the cart/route + a checkout-deferred note; a blocking `needs`
+// becomes a friendly instruction; any other failure stays honest.
 function formatOrderReply(res, service = "food") {
   if (res.ok && res.final_result) {
     const tail = service === "taxi"
@@ -497,6 +511,7 @@ function formatOrderReply(res, service = "food") {
       : "\n\nоплату не трогал — скажи «оплати», когда будешь готов.";
     return `${res.final_result}${tail}`;
   }
+  if (res.needs && NEEDS_MSG[res.needs]) return NEEDS_MSG[res.needs];
   const what = service === "taxi" ? "рассчитать поездку" : "собрать заказ";
   return `не получилось ${what} автоматически (${res.status || "ошибка"}). попробую иначе или подскажи детали.`;
 }
@@ -557,11 +572,24 @@ async function processRow(row) {
   log(`done id=${row.id} ch=${row.channel || "imessage"} facts=${facts.length}+${memories.length} -> "${cleaned.slice(0, 60)}"`);
 }
 
+// Pure (unit-tested): pick the claim mutation by mode. USER_ID set → scoped per-user
+// container claim (messages:claimNextForUser, userId-pinned, server-side tenant scoping).
+// Unset → shared drainer claim across all tenants (messages:claimNextAny, unchanged).
+// workerSecret is added by convex(); both mutations return the same claimReturns shape,
+// so EVERYTHING downstream (processRow, Eve call, order routing, rich, facts) is identical.
+function claimSpec(env = process.env) {
+  const userId = env.USER_ID || "";
+  return userId
+    ? { path: "messages:claimNextForUser", args: { userId } }
+    : { path: "messages:claimNextAny", args: {} };
+}
+
 async function main() {
-  log(`eve-drainer up. convex=${CONVEX} eve=${EVE_URL}`);
+  const claim = claimSpec();
+  log(`eve-drainer up. convex=${CONVEX} eve=${EVE_URL} claim=${claim.path}${USER_ID ? ` user=${USER_ID}` : ""}`);
   for (;;) {
     let row = null;
-    try { row = await convex("mutation", "messages:claimNextAny", {}); }
+    try { row = await convex("mutation", claim.path, claim.args); }
     catch (e) { log("claim error:", e.message); await sleep(IDLE_MS * 2); continue; }
     if (!row) { await sleep(IDLE_MS); continue; }
     log(`claimed id=${row.id} ch=${row.channel || "imessage"} from=${row.userNumber} text="${(row.text || "").slice(0, 60)}"`);
@@ -584,4 +612,4 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 }
 
 export { ORDER_HINT, formatOrderReply, classifyOrder, buildOrderArgs, parseRich, emojiToTapback,
-  buildMessage, extractMemories, factsFor, addFact, foldEvent, selectReply };
+  buildMessage, extractMemories, factsFor, addFact, foldEvent, selectReply, claimSpec };

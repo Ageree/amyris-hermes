@@ -1,0 +1,147 @@
+# =============================================================================
+# Dockerfile.eve-fleet — per-tenant EVE worker container (Eve brain + browser-use)
+#
+# Reuses the proven old Hermes fleet image (lab/docker/Dockerfile.fleet): same
+# python3.12-slim base, same system Chromium + X libs the per-tenant headless
+# browser needs, same non-root / tini / bind-mount contract. The BRAIN is swapped
+# Hermes -> Eve: instead of cloning + installing the Hermes runtime, we COPY the
+# self-contained Eve Nitro build (agent/.output, ~5.5M, no node_modules) and run it
+# with node 24. The drainer (control-plane/drainer) polls Convex, calls the local
+# Eve server, and routes order intents to order.py (browser-use over CDP).
+#
+# Runtime env contract (docs/eve-fleet-spec.md §"Container interface contract") —
+# ALL secrets arrive via docker run / the controller's _build_env; NOTHING baked:
+#   Required:  USER_ID  CONVEX_URL  WORKER_SECRET  EVE_INGRESS_SECRET
+#              MINIMAX_API_KEY  SENDBLUE_API_KEY_ID  SENDBLUE_API_SECRET_KEY
+#              SENDBLUE_FROM_NUMBER  INSTANCE_ID
+#   Optional:  TELEGRAM_BOT_TOKEN  EXA_API_KEY  EVE_PORT(=4123)
+#              MINIMAX_BASE_URL(=https://openrouter.ai/api/v1)
+#              MINIMAX_MODEL(=minimax/minimax-m3)
+#   Bind mount: HERMES_HOME=/data/tenants/<userId> — per-tenant Chrome profile +
+#              state (GCS-mirrored). Never baked; supplied at runtime as a bind mount.
+#
+# When USER_ID is set the drainer claims SCOPED (messages:claimNextForUser); the
+# shared Mac drainer (messages:claimNextAny) is unchanged and not used here.
+# =============================================================================
+
+# node 24 source — Eve's .output is self-contained, so we only need the `node`
+# runtime, not npm/corepack. ponytail: COPY one binary from the official image
+# instead of adding an apt nodesource repo (no new apt source, no build network).
+ARG NODE_TAG=24-slim
+FROM node:${NODE_TAG} AS nodesrc
+
+# ---------------------------------------------------------------------------
+# Base — python3.12-slim + tini + system Chromium (the per-tenant headless
+# browser order.py drives over CDP) + the node 24 runtime.
+# ---------------------------------------------------------------------------
+FROM python:3.12-slim AS base
+
+ENV PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=5 \
+    PYTHONUNBUFFERED=1
+
+# tini (PID-1 signal forwarding), curl (the entrypoint's health poll),
+# ca-certificates (TLS), then system Chromium + the X/font libs headless Chrome
+# needs. This is the old fleet's chromium layer, reused verbatim minus ffmpeg
+# (the JS drainer sends media by URL — no local transcode) and minus git (we clone
+# nothing — Eve is COPY'd, not built from source). ponytail: smaller surface, same
+# browser. Upgrade path = re-add ffmpeg if an in-container voice transcode is needed.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tini \
+        ca-certificates \
+        curl \
+        chromium \
+        chromium-driver \
+        fonts-liberation \
+        libglib2.0-0 \
+        libnss3 \
+        libatk1.0-0 \
+        libatk-bridge2.0-0 \
+        libx11-xcb1 \
+        libxcomposite1 \
+        libxcursor1 \
+        libxdamage1 \
+        libxfixes3 \
+        libxi6 \
+        libxrandr2 \
+        libxrender1 \
+        libxss1 \
+        libxtst6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# node 24 runtime for the Eve server + the drainer. libstdc++6 (a node dep) is
+# pulled in by chromium above, so the lone binary runs. Smoke it so a bad COPY /
+# ABI mismatch fails the build here, not at container start.
+COPY --from=nodesrc /usr/local/bin/node /usr/local/bin/node
+RUN node --version
+
+WORKDIR /app
+
+# order.py python deps in a DEDICATED venv (isolated from system python). browser-use
+# 0.13.1 is the proven host version; it talks to Chrome over CDP via cdp-use, so we do
+# NOT run `playwright install` — order.py ATTACHES to the entrypoint's system Chrome on
+# :9222 (ORDER_CDP_URL), never launching its own browser. ponytail: skip the ~150MB
+# playwright browser download; system chromium + CDP-attach is the browser. Upgrade
+# path = `playwright install chromium` if a fresh-profile (non-attach) flow is ever
+# run inside the container.
+RUN python -m venv /opt/order-venv \
+    && /opt/order-venv/bin/pip install --no-cache-dir \
+        browser-use==0.13.1 \
+        playwright
+
+# ---- App payload (all COPY, nothing built) --------------------------------
+# Eve Nitro build: self-contained, run via `node /app/eve/.output/server/index.mjs`.
+COPY agent/.output /app/eve/.output
+# The order engine (browser-use). Run via /opt/order-venv/bin/python.
+COPY features/browser_tasks/order.py /app/features/order.py
+# The scoped drainer/poller (claims Convex -> calls Eve -> sends reply -> order.py).
+COPY control-plane/drainer/*.mjs /app/drainer/
+# The container entrypoint (tini child): Chrome -> Eve -> health-wait -> exec drainer.
+COPY lab/docker/eve-fleet-entrypoint.sh /app/eve-fleet-entrypoint.sh
+
+# ---- Cheap build-time gate (HARD: any failure aborts the build) -----------
+# Mirrors the old image's in-build gate, sized to what THIS image ships: node runs,
+# the drainer parses (syntax), order.py compiles, the Eve server bundle is present.
+# No network, no live deploy. (node --check validates syntax only — it does NOT
+# resolve imports — which is exactly the right cheap gate for a COPY'd bundle.)
+RUN node --check /app/drainer/drainer.mjs \
+    && /opt/order-venv/bin/python -m py_compile /app/features/order.py \
+    && test -f /app/eve/.output/server/index.mjs
+
+# ---- Runtime config -------------------------------------------------------
+# Defaults — overridden at runtime by the controller's _build_env. EVE_URL,
+# ORDER_CDP_URL and the order paths are the container interlock; the drainer reads
+# them from env (its ~/.eve-* host defaults don't exist here, so we MUST set them).
+ENV HERMES_HOME=/data/tenants/default \
+    EVE_PORT=4123 \
+    EVE_URL=http://127.0.0.1:4123 \
+    ORDER_CDP_URL=http://127.0.0.1:9222 \
+    ORDER_PY=/app/features/order.py \
+    ORDER_VENV=/opt/order-venv/bin/python \
+    MINIMAX_BASE_URL=https://openrouter.ai/api/v1 \
+    MINIMAX_MODEL=minimax/minimax-m3 \
+    # Deterministic (Linux) path so the drainer's macOS-default fallback never
+    # leaks in. Unused in attach mode (order.py drives system Chrome via CDP);
+    # this is where `playwright install chromium` would land for a fresh-profile flow.
+    PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+
+# Non-root (defense-in-depth): a container escape / rogue browser tool can't reach the
+# host or other tenants as root. uid/gid 10001 = the id the VM chowns the per-tenant
+# bind-mount (/data/tenants/<userId>) to. Created AFTER the build gate (root) and
+# BEFORE the worker runs.
+RUN groupadd -g 10001 hermes \
+    && useradd -u 10001 -g 10001 -m -s /usr/sbin/nologin hermes \
+    && mkdir -p /data/tenants/default \
+    && chmod +x /app/eve-fleet-entrypoint.sh \
+    && chown -R hermes:hermes /app /data/tenants
+
+# tini as PID 1 — forwards SIGTERM so `docker stop` cleanly tears down the container
+# (Chrome + the Eve server + the drainer).
+ENTRYPOINT ["/usr/bin/tini", "--"]
+
+USER hermes
+WORKDIR /app
+
+# Entrypoint: launch headless Chrome (:9222), launch the Eve server (EVE_PORT), wait
+# for /eve/v1/health, then exec the SCOPED drainer (USER_ID injected at runtime).
+CMD ["./eve-fleet-entrypoint.sh"]

@@ -30,6 +30,11 @@
 # Not needed by the fleet image
 web
 docs
-control-plane
 scripts
 *.md
+# control-plane is deliberately NOT excluded wholesale: Dockerfile.eve-fleet COPYs
+# control-plane/drainer. The only heavy part (control-plane/node_modules, 91M) is
+# already dropped by **/node_modules above, and control-plane/.env.local by **/.env.*
+# — so the drainer ships without needing a broad exclusion + `!` re-include (whose
+# subdir-of-excluded-dir semantics differ across docker builders). control-plane/convex
+# (~256K, unused by the image) just rides along in the context, harmlessly.

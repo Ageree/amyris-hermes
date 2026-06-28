@@ -25,6 +25,8 @@ Run (one JSON object on stdout; logs to stderr):
   …                                        --service grocery --address "Тверская 7" --item "молоко"
   add --attach --pay   to complete a real paid order on the persistent profile.
 """
+from __future__ import annotations  # `str | None` annotations stay portable to py3.9
+
 import argparse
 import asyncio
 import json
@@ -115,10 +117,20 @@ GUARD_PAY = (
     "'ORDER_PLACED' с суммой и способом оплаты. Капча → останови и сообщи."
 )
 
+# login-wall detect (appended to BOTH guards). A per-user container's persistent Chrome
+# profile may not be logged into Yandex yet (first order). The agent must NEVER log in
+# itself — the USER does that once via the live-view handoff (see docs/eve-fleet-onboarding.md)
+# — it returns NEED_LOGIN so the poller can surface the handoff URL through the user's channel.
+GUARD_LOGIN = (
+    " ОТДЕЛЬНО (вход в аккаунт): если для продолжения Яндекс требует ВОЙТИ — открылась "
+    "passport.yandex.ru, экран входа по номеру телефона/коду из SMS, а аккаунт НЕ залогинен — "
+    "НЕ логинься сам и НЕ вводи телефон/код, верни 'NEED_LOGIN' и останови задачу."
+)
+
 
 def build_task(service: str, params: dict, pay: bool) -> str:
     tmpl = SERVICES[service]
-    guard = GUARD_PAY if pay else GUARD_NOPAY
+    guard = (GUARD_PAY if pay else GUARD_NOPAY) + GUARD_LOGIN
     return tmpl.substitute(**params, guard=guard)
 
 
@@ -202,7 +214,9 @@ async def run(args) -> dict:
         "service": args.service,
         "params": params,
         "paid": args.pay and "ORDER_PLACED" in final,
-        "needs": next((m for m in ("NEED_CARD", "NEED_3DS", "WEB_NO_ORDER") if m in final), None),
+        # NEED_LOGIN first: an un-logged-in profile is the ROOT block (NEED_CARD is moot
+        # until the user is signed in) → it wins, and the poller triggers the handoff.
+        "needs": next((m for m in ("NEED_LOGIN", "NEED_CARD", "NEED_3DS", "WEB_NO_ORDER") if m in final), None),
         "final_result": final,
         "steps": history.number_of_steps() if hasattr(history, "number_of_steps") else None,
         "last_url": urls[-1] if urls else None,
@@ -232,6 +246,9 @@ def main():
         t = build_task("taxi", {"origin": "А", "dest": "Б"}, True)
         assert "А" in t and "Б" in t
         assert "NEED_CARD" in build_task("food", {"address": "x", "item": "y"}, True)
+        # NEED_LOGIN detectable in BOTH modes (the container login handoff trigger).
+        assert "NEED_LOGIN" in build_task("food", {"address": "x", "item": "y"}, False)
+        assert "NEED_LOGIN" in build_task("taxi", {"origin": "А", "dest": "Б"}, True)
         assert "НЕ оплачивай" in build_task("food", {"address": "x", "item": "y"}, False)
         assert "$" not in build_task("taxi", {"origin": "А", "dest": "Б"}, False), "unsubstituted template var"
         # service → correct site (food→eda, grocery→lavka, taxi→taxi).
