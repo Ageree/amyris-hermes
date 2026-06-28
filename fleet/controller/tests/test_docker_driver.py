@@ -36,7 +36,8 @@ class TestDockerRun:
         driver = DockerDriver(run_cmd=recording_run)
         driver.run("img:v1", "test-name", {"A": "1", "B": "2"})
 
-        cmd = calls[0]
+        assert calls[0] == ["docker", "rm", "test-name"]
+        cmd = calls[1]
         assert cmd[0] == "docker"
         assert "run" in cmd
         assert "--detach" in cmd
@@ -60,10 +61,24 @@ class TestDockerRun:
         driver = DockerDriver(run_cmd=recording_run)
         driver.run("img", "c1", {}, mounts=["/host:/container:rw"])
 
-        cmd = calls[0]
+        cmd = calls[1]
         assert "--volume" in cmd
         vol_idx = cmd.index("--volume")
         assert cmd[vol_idx + 1] == "/host:/container:rw"
+
+    def test_run_removes_stopped_name_before_start_without_force(self):
+        calls = []
+
+        def recording_run(cmd, **kwargs):
+            calls.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout="cid\n", stderr="")
+
+        driver = DockerDriver(run_cmd=recording_run)
+        driver.run("img", "stale-name", {})
+
+        assert calls[0] == ["docker", "rm", "stale-name"]
+        assert "-f" not in calls[0]
+        assert calls[1][:5] == ["docker", "run", "--detach", "--name", "stale-name"]
 
     def test_run_raises_on_failure(self):
         def fail_run(cmd, **kwargs):

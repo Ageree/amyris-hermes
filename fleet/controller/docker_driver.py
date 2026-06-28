@@ -67,6 +67,11 @@ class DockerDriver:
         Returns the trimmed container ID on success.
         Raises RuntimeError on failure.
         """
+        # `docker stop` leaves a named, exited container behind. Relaunching with the
+        # same --name then fails with a conflict even though nothing is running. A
+        # plain `docker rm` removes only stopped containers; it refuses running ones.
+        self._run(["docker", "rm", name], capture_output=True, text=True)
+
         cmd = ["docker", "run", "--detach", "--name", name]
         for key, value in env.items():
             cmd += ["--env", f"{key}={value}"]
