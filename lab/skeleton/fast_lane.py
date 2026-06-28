@@ -30,12 +30,15 @@ model to treat message content as DATA, not commands.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, List, Optional
 
 import requests
+
+log = logging.getLogger("worker.fast_lane")
 
 from bubbles import split_into_bubbles, DEFAULT_HARD_CAP
 
@@ -246,7 +249,8 @@ def _chat_once(
             return None
         content = (choices[0].get("message") or {}).get("content") or ""
     except Exception:
-        return None  # FAIL-SAFE: any transport/model error -> defer to Hermes
+        log.warning("fast-lane _chat_once failed (deferring to hermes)", exc_info=True)
+        return None
     return _strip(content) or None
 
 
@@ -383,6 +387,7 @@ def _parse_sse_delta(raw: Any) -> Optional[str]:
         piece = (choices[0].get("delta") or {}).get("content")
         return piece if isinstance(piece, str) and piece else None
     except Exception:
+        log.debug("_parse_sse_delta: failed to parse SSE line", exc_info=True)
         return None
 
 
@@ -545,13 +550,14 @@ def stream_fast_reply(
             if _flush_closed_paragraphs():
                 return StreamResult(None, 0, deferred=True)
     except Exception:
+        log.warning("streaming fast-lane transport error", exc_info=True)
         errored = True
     finally:
         if resp is not None:
             try:
                 resp.close()
             except Exception:
-                pass
+                log.debug("resp.close() failed", exc_info=True)
 
     # ---- stream ended (or broke) -----------------------------------------
     if decided:

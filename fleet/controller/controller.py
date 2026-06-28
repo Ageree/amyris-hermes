@@ -437,6 +437,7 @@ def _build_hosts_state(cfg: ControllerConfig, docker: DockerDriver) -> list[dict
     try:
         running_containers = docker.ps()
     except Exception:
+        logger.warning("docker.ps() failed; placement will use zero counts", exc_info=True)
         running_containers = []
 
     # Count by host name prefix (best-effort heuristic)

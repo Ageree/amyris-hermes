@@ -577,7 +577,7 @@ class _BubbleEmitter:
             try:
                 self._sleep(self._cfg.bubble_delay)
             except Exception:
-                pass
+                log.debug("bubble delay sleep interrupted for %s", self._target, exc_info=True)
         try:
             res = self._channel.send_message(self._target, text)
             if getattr(res, "ok", True) and self.first_at is None:

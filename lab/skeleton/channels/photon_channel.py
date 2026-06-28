@@ -309,6 +309,7 @@ class PhotonChannel:
             )
             return getattr(resp, "status_code", None) == 200
         except Exception:
+            log.debug("photon healthz probe failed for %s", self._base, exc_info=True)
             return False
 
     def ensure_sidecar(self, *, port: Optional[int] = None, ready_timeout: float = 15.0) -> bool:
