@@ -1,0 +1,2 @@
+{"turn":1,"actor":"lead","at":"2026-06-28","event":"built unified order.py (food/grocery/taxi + attach + pay-guard); drainer routes by service + classifier taxi enum; 5 self-checks + check-templates green; live classify PASS; drainer deployed+booted clean; taxi live run in progress"}
+{"turn":1,"actor":"lead","at":"2026-06-28","event":"taxi live run PASS: ok=true, taxi.yandex.ru route Мичуринский56→Фрунзенская4, Эконом от 348₽, no-login/no-pay guard respected, 15 steps. Lavka first run 403 self-inflicted (concurrent IP) -> solo retry launched."}

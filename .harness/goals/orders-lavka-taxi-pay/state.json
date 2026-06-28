@@ -1,0 +1,1 @@
+{"turn":0,"status":"open","started_at":"2026-06-28","mode":"lead-driven","reason":"browser+payment+device-coupled verification; the bash-harness driver subagents die on 2-4min browser-use runs and cannot confirm real per-order payments, so the lead drives the build and runs browser tests directly"}
