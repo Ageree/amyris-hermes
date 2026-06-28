@@ -6,7 +6,8 @@
   "description": "Always-on Convex control plane: Sendblue inbound webhook + durable message queue. The brain (Hermes + browser) polls this; it never has to be publicly reachable.",
   "scripts": {
     "dev": "convex dev",
-    "deploy": "convex deploy"
+    "deploy": "convex deploy",
+    "test": "vitest run"
   },
   "dependencies": {
     "@auth/core": "^0.37.0",
@@ -15,6 +16,7 @@
   },
   "devDependencies": {
     "@types/node": "^25.9.3",
-    "typescript": "^6.0.3"
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
   }
 }
