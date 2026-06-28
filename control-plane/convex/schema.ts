@@ -194,4 +194,25 @@ export default defineSchema({
   })
     .index("by_slug", ["slug"])   // webhook/serve lookup (the unique serving key)
     .index("by_user", ["userId"]), // list a user's apps
+
+  // chat-sites: assistant-generated personalized sites/apps. `html` is the full
+  // single-file document served at /s/<handle>. `app` sites get an isolated Turso
+  // DB (name/hostname/scoped token stored server-side ONLY — never returned to a
+  // browser). handle is the unique public slug (DNS-label safe for future subdomains).
+  sites: defineTable({
+    handle: v.string(),
+    userId: v.optional(v.id("users")),        // owner (optional: operator legacy worker has no USER_ID)
+    kind: v.union(v.literal("static"), v.literal("app")),
+    title: v.optional(v.string()),
+    html: v.string(),
+    tursoDbName: v.optional(v.string()),       // app only
+    tursoHostname: v.optional(v.string()),     // app only — <db>-<org>.<region>.turso.io
+    tursoToken: v.optional(v.string()),        // app only — scoped full-access JWT (secret)
+    schemaSql: v.optional(v.string()),         // app only — CREATE TABLE statements applied at provision
+    version: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_handle", ["handle"])            // public serve + data routes (unique key)
+    .index("by_user", ["userId", "updatedAt"]), // a user's sites (dashboard, future)
 });

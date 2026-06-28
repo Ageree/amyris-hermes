@@ -46,9 +46,11 @@ from channels.rich import TextPart, parse_rich
 # Hermes-only path, NOT crash-loop the always-on daemon at import time. Mirrors
 # the composio guard.
 try:
-    from fast_lane import contains_url, fast_reply, stream_fast_reply
+    from fast_lane import contains_url, looks_like_build_request, fast_reply, stream_fast_reply
 except Exception:  # pragma: no cover - exercised only on a broken deploy
     def contains_url(text: str) -> bool:  # noqa: ARG001 - stub keeps the daemon alive
+        return False
+    def looks_like_build_request(text: str) -> bool:  # noqa: ARG001 - stub
         return False
     fast_reply = None
     stream_fast_reply = None
@@ -387,6 +389,8 @@ def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]
     if not cfg.fast_lane_enabled:
         return False
     if contains_url(text):  # links almost always need the real tool agent
+        return False
+    if looks_like_build_request(text):  # "make me a site/app" needs create-site skill + terminal
         return False
     if fast_fn is not None:
         return True
@@ -1267,6 +1271,62 @@ def seed_browser_harness(hermes_home: str) -> bool:
         return False
 
 
+def seed_create_site(hermes_home: str) -> bool:
+    """Idempotently install the create-site skill so the agent can build & deploy
+    personalized sites/apps in chat. Copies SKILL.md + publish.py into the tenant's
+    HERMES_HOME, exports SITE_PUBLISH_PY (its absolute path), and allowlists the
+    env the publish script needs (CONVEX_URL / SITES_PUBLISH_SECRET / USER_ID /
+    SITE_PUBLISH_PY) through the terminal scrubber. Returns True if applied.
+
+    Kill-switch: CREATE_SITE_ENABLED=0 -> no-op. Fail-soft: any error leaves the
+    worker running without the skill rather than crash-looping. Deliberately uses
+    the NARROW SITES_PUBLISH_SECRET (not WORKER_SECRET) — that secret becomes
+    readable inside the agent's terminal, so its blast radius is capped at "can
+    publish sites".
+    """
+    if not _truthy(os.environ.get("CREATE_SITE_ENABLED", "1")):
+        return False
+    try:
+        import yaml  # pyyaml (skeleton requirement)
+
+        home = os.path.expanduser(hermes_home)
+        os.makedirs(home, exist_ok=True)
+        # Copy the skill (SKILL.md + scripts/publish.py) into HERMES_HOME/skills.
+        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "..", "skills", "create-site")
+        dst_dir = os.path.join(home, "skills", "create-site")
+        os.makedirs(os.path.join(dst_dir, "scripts"), exist_ok=True)
+        for rel in ("SKILL.md", os.path.join("scripts", "publish.py")):
+            s = os.path.join(src_dir, rel)
+            d = os.path.join(dst_dir, rel)
+            # In the operator's deployed layout HERMES_HOME is the worker's parent,
+            # so src == dst — skip the self-copy (shutil.copyfile would SameFileError).
+            if os.path.exists(s) and os.path.abspath(s) != os.path.abspath(d):
+                shutil.copyfile(s, d)
+        script = os.path.join(dst_dir, "scripts", "publish.py")
+        os.environ["SITE_PUBLISH_PY"] = script  # SKILL.md runs `python3 "$SITE_PUBLISH_PY"`
+
+        cfg_path = os.path.join(home, "config.yaml")
+        cfg: dict = {}
+        if os.path.exists(cfg_path):
+            with open(cfg_path) as f:
+                cfg = yaml.safe_load(f) or {}
+        term = cfg.setdefault("terminal", {})
+        ep = set(term.get("env_passthrough") or [])
+        ep.update(["CONVEX_URL", "SITES_PUBLISH_SECRET", "USER_ID", "SITE_PUBLISH_PY"])
+        term["env_passthrough"] = sorted(ep)
+        with open(cfg_path, "w") as f:
+            yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
+        # Writing config.yaml short-circuits env-based model resolution — re-assert
+        # the model block (same reason as seed_browser_harness).
+        _enforce_model_block(home)
+        log.info("create-site: skill seeded (publish via SITES_PUBLISH_SECRET)")
+        return True
+    except Exception as e:  # fail-soft
+        log.warning("create-site seed failed (skill unavailable this run): %s", e)
+        return False
+
+
 def _bootstrap_photon_inbound(cfg: WorkerConfig, *, convex: Optional[Any] = None) -> WorkerConfig:
     """Wire the Photon inbound consumer (W1) + enforce the bearer precondition (W4).
 
@@ -1338,6 +1398,7 @@ def main() -> None:
     )
     cfg = WorkerConfig.from_env()
     seed_browser_harness(cfg.hermes_home)
+    seed_create_site(cfg.hermes_home)
     # Graceful shutdown (Bug H3): catch docker stop's SIGTERM (and Ctrl-C) so an
     # in-flight turn finishes instead of being SIGKILLed. Fail-soft.
     _install_signal_handlers()

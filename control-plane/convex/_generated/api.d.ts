@@ -10,6 +10,7 @@
 
 import type * as ResendOTP from "../ResendOTP.js";
 import type * as admin from "../admin.js";
+import type * as agent from "../agent.js";
 import type * as app_account from "../app/account.js";
 import type * as app_authGate from "../app/authGate.js";
 import type * as app_billing from "../app/billing.js";
@@ -28,11 +29,17 @@ import type * as fleet from "../fleet.js";
 import type * as http from "../http.js";
 import type * as intents from "../intents.js";
 import type * as lib_auth from "../lib/auth.js";
+import type * as lib_eve from "../lib/eve.js";
+import type * as lib_habitApp from "../lib/habitApp.js";
 import type * as lib_identity from "../lib/identity.js";
+import type * as lib_libsql from "../lib/libsql.js";
+import type * as lib_sitelib from "../lib/sitelib.js";
+import type * as lib_turso from "../lib/turso.js";
 import type * as messages from "../messages.js";
 import type * as migrations from "../migrations.js";
 import type * as pairing from "../pairing.js";
 import type * as quota from "../quota.js";
+import type * as sites from "../sites.js";
 import type * as testing from "../testing.js";
 
 import type {
@@ -44,6 +51,7 @@ import type {
 declare const fullApi: ApiFromModules<{
   ResendOTP: typeof ResendOTP;
   admin: typeof admin;
+  agent: typeof agent;
   "app/account": typeof app_account;
   "app/authGate": typeof app_authGate;
   "app/billing": typeof app_billing;
@@ -62,11 +70,17 @@ declare const fullApi: ApiFromModules<{
   http: typeof http;
   intents: typeof intents;
   "lib/auth": typeof lib_auth;
+  "lib/eve": typeof lib_eve;
+  "lib/habitApp": typeof lib_habitApp;
   "lib/identity": typeof lib_identity;
+  "lib/libsql": typeof lib_libsql;
+  "lib/sitelib": typeof lib_sitelib;
+  "lib/turso": typeof lib_turso;
   messages: typeof messages;
   migrations: typeof migrations;
   pairing: typeof pairing;
   quota: typeof quota;
+  sites: typeof sites;
   testing: typeof testing;
 }>;
 

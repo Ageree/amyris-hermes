@@ -84,7 +84,8 @@ _ROUTER_RULES = (
     "real-time or current info (weather, news, prices, scores, 'now'/'today'/"
     "'latest'), the user's private stuff (email, calendar, files, messages, "
     "accounts, saved links/content), or an ACTION (send, post, buy, open a site, "
-    "search the web, schedule, remind, save).\n"
+    "search the web, schedule, remind, save, or BUILD/DEPLOY a website, page, or "
+    "app for them).\n"
     "STRONGLY prefer ANSWER — speed matters; only escalate to " + THINK_SENTINEL +
     " when you'd genuinely get it wrong otherwise. if your honest reply would be "
     "that you can't do it, lack access, or need a connection — reply " +
@@ -137,6 +138,43 @@ def _default_session() -> requests.Session:
 def contains_url(text: str) -> bool:
     """True if the message carries a link (obvious-heavy -> skip the fast lane)."""
     return bool(_URL_RE.search(text or ""))
+
+
+# Build-intent prefilter: "make me a site/app/landing/guestbook" needs the
+# create-site skill + terminal, which ONLY the heavy Hermes lane has. The fast
+# lane would just chat ("sure, what kind?") and never build it. Same obvious-heavy
+# treatment as contains_url. Bias to RECALL: a false positive costs only a slower
+# turn; a false negative means the user's build request silently goes unbuilt.
+_BUILD_VERB = (
+    r"сдела|созда|постро|запил|сверст|свёрст|собер|замут|заверст|"
+    r"\bmake\b|\bbuild\b|\bcreate\b|generat|\bdeploy\b|whip up|spin up|put together|set up"
+)
+_BUILD_NOUN = (
+    r"сайт|лендинг|ленд\b|веб[-\s]?страниц|страничк|портфолио|визитк|резюме|"
+    r"one[-\s]?pager|onepager|landing|website|web[-\s]?app|web[-\s]?site|"
+    r"приложени|мини[-\s]?апп|гостев|guestbook|опрос|голосован|\bpoll\b|"
+    r"счёт?чик|\bcounter\b|табло|\bwall\b|доск[ауи]|\bapp\b|\bpage\b|\bsite\b"
+)
+_BUILD_NEAR = re.compile(
+    r"(?:" + _BUILD_VERB + r")[\s\S]{0,40}(?:" + _BUILD_NOUN + r")"
+    r"|(?:" + _BUILD_NOUN + r")[\s\S]{0,40}(?:" + _BUILD_VERB + r")",
+    re.IGNORECASE,
+)
+# Strong standalone phrases that are a build request on their own in this assistant.
+_BUILD_STANDALONE = re.compile(
+    r"\bлендинг\b|лендос|landing page|link[-\s]?in[-\s]?bio|мини[-\s]?приложени|mini[-\s]?app",
+    re.IGNORECASE,
+)
+
+
+def looks_like_build_request(text: str) -> bool:
+    """True if the message asks to build/deploy a site or app (-> Hermes lane).
+
+    The fast lane has no create-site skill or terminal, so it can only TALK about
+    a build, not do it. Treat like contains_url and route to the heavy agent.
+    """
+    t = text or ""
+    return bool(_BUILD_NEAR.search(t) or _BUILD_STANDALONE.search(t))
 
 
 def _strip(text: str) -> str:

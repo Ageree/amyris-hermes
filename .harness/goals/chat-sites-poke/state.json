@@ -1,0 +1,8 @@
+{
+  "turn": 0,
+  "status": "done",
+  "started_at": 1782142816,
+  "goal": "chat-sites works like Poke",
+  "last_audit_at": 1782200000,
+  "audit_verdict": "PASS"
+}
