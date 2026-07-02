@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import { SignInCard } from "@/components/auth/SignInCard";
 
 export const metadata: Metadata = {
-  title: "Войти · Amyris",
+  title: "Войти · dhizume",
 };
 
 export default function SignInPage() {
@@ -23,7 +23,7 @@ export default function SignInPage() {
             <span className="absolute h-2.5 w-2.5 rounded-full bg-lime/60 ping-ring" />
             <span className="relative h-2 w-2 rounded-full bg-lime pulse-dot" />
           </span>
-          Amyris
+          dhizume
         </span>
         <h1 className="text-sm text-muted">Вход по номеру телефона</h1>
       </div>

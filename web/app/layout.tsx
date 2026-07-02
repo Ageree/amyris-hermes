@@ -20,12 +20,12 @@ const display = Cormorant_Garamond({
 });
 export const metadata: Metadata = {
   metadataBase: new URL("https://hermes-fleet-web.vercel.app"),
-  title: "Amyris — ассистент в iMessage",
+  title: "dhizume — ассистент в iMessage",
   description:
-    "Amyris принимает задачи прямо в iMessage и доводит их до результата.",
+    "dhizume принимает задачи прямо в iMessage и доводит их до результата.",
   icons: { icon: "/ascii-magic/wallpaper.png" },
   openGraph: {
-    title: "Amyris — ассистент в iMessage",
+    title: "dhizume — ассистент в iMessage",
     description:
       "Начните в iMessage или войдите в кабинет по номеру телефона.",
     type: "website",

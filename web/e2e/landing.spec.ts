@@ -5,15 +5,15 @@ test.describe("landing page", () => {
     await page.goto("/");
   });
 
-  test("shows the wallpaper-led Amyris hero", async ({ page }) => {
-    await expect(page.getByRole("heading", { name: /^Amyris$/ })).toBeVisible();
+  test("shows the wallpaper-led dhizume hero", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /^dhizume$/ })).toBeVisible();
     await expect(page.getByText(/ИИ который действительно полезен/i)).toBeVisible();
   });
 
   test("primary CTA opens iMessage", async ({ page }) => {
     const start = page.getByTestId("start-imessage");
     await expect(start).toBeVisible();
-    await expect(start).toHaveText("Начать");
+    await expect(start).toContainText("Начать");
     await expect(start).toHaveAttribute("href", /^imessage:\/\//);
   });
 

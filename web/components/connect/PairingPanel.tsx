@@ -147,7 +147,7 @@ export function PairingPanel({
               </a>
             ) : (
               <p className="text-sm text-muted">
-                text <span className="font-mono text-ink">pair {code}</span> to the Amyris number.
+                text <span className="font-mono text-ink">pair {code}</span> to the dhizume number.
               </p>
             )}
           </div>

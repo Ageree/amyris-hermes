@@ -25,7 +25,7 @@ export function Hero() {
 
       <div className="rise relative z-10 mt-auto w-full max-w-4xl pb-5 sm:pb-9 lg:pb-12">
         <h1 className="font-display mt-4 max-w-[11ch] text-balance text-6xl font-semibold leading-[0.92] text-ink [text-shadow:0_2px_28px_rgba(0,0,0,0.68)] sm:text-8xl lg:text-9xl">
-          Amyris
+          dhizume
         </h1>
 
         <p className="mt-6 max-w-xl text-pretty text-base font-medium leading-relaxed text-ink/90 [text-shadow:0_1px_18px_rgba(0,0,0,0.72)] sm:text-lg">
