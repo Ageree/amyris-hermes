@@ -11,8 +11,15 @@ import {
 } from "./lib/habitApp";
 import { injectRuntime, guardSql } from "./lib/sitelib";
 import { execSql } from "./lib/turso";
+import {
+  parseCrewCallbackData,
+  parseCrewDecision,
+  shouldInterceptCrewDecision,
+} from "./crew";
+import { loginHandoffGetResponse } from "./loginHandoff";
 
 const http = httpRouter();
+const internalAny = internal as any;
 
 function jsonOk(obj: unknown, status = 200): Response {
   return new Response(JSON.stringify(obj), {
@@ -38,6 +45,87 @@ function safeEqual(a: string, b: string): boolean {
   let diff = 0;
   for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
   return diff === 0;
+}
+
+async function telegramBotPost(method: string, payload: unknown): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN ?? "";
+  if (!token) {
+    console.error("TELEGRAM_BOT_TOKEN not configured");
+    return false;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/${method}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      console.error(`telegram ${method} HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    }
+    return res.ok;
+  } catch (e) {
+    console.error(`telegram ${method} failed: ${errMsg(e)}`);
+    return false;
+  }
+}
+
+async function settleCrewTelegramCallback(callback: any, okText: string) {
+  const callbackId = callback?.id ? String(callback.id) : "";
+  if (callbackId) {
+    await telegramBotPost("answerCallbackQuery", {
+      callback_query_id: callbackId,
+      text: okText,
+    });
+  }
+  const chatId = callback?.message?.chat?.id;
+  const messageId = callback?.message?.message_id;
+  if (chatId !== undefined && chatId !== null && messageId !== undefined && messageId !== null) {
+    await telegramBotPost("editMessageReplyMarkup", {
+      chat_id: String(chatId),
+      message_id: messageId,
+      reply_markup: { inline_keyboard: [] },
+    });
+  }
+}
+
+async function tryHandleCrewTextDecision(
+  ctx: any,
+  args: {
+    userId: string;
+    text: string;
+    channel: "imessage" | "telegram";
+    replyTarget: string;
+  },
+): Promise<boolean> {
+  const next = parseCrewDecision(args.text);
+  if (!next) return false;
+
+  const pending = await ctx.runQuery(internalAny.crew.latestPendingForUser, {
+    userId: args.userId,
+  });
+  if (shouldInterceptCrewDecision(args.text, pending)) {
+    await ctx.runMutation(internalAny.crew.decideTask, {
+      taskId: pending.taskId,
+      userId: args.userId,
+      decision: next,
+      channel: args.channel,
+      replyTarget: args.replyTarget,
+    });
+    return true;
+  }
+
+  const invite = await ctx.runQuery(internalAny.crew.latestInviteForUser, {
+    userId: args.userId,
+  });
+  if (invite) {
+    await ctx.runMutation(internalAny.crew.decideInvite, {
+      linkId: invite.linkId,
+      userId: args.userId,
+      decision: next,
+    });
+    return true;
+  }
+  return false;
 }
 
 // Sendblue inbound webhook. Always-on at https://<deployment>.convex.site.
@@ -114,6 +202,15 @@ http.route({
     );
     if (!resolved) return jsonOk({ ignored: true }); // unknown sender → drop (no budget burn)
 
+    if (await tryHandleCrewTextDecision(ctx, {
+      userId: resolved.userId,
+      text,
+      channel: "imessage",
+      replyTarget: userNumber,
+    })) {
+      return jsonOk({ ok: true, crew: true });
+    }
+
     await ctx.runMutation(internal.messages.enqueue, {
       handle,
       userId: resolved.userId,
@@ -166,6 +263,41 @@ http.route({
       return jsonOk({ ignored: true }); // malformed JSON — don't make Telegram retry
     }
 
+    const callback = update?.callback_query;
+    if (callback) {
+      const parsed = parseCrewCallbackData(String(callback?.data ?? ""));
+      if (!parsed) return jsonOk({ ignored: true });
+
+      const chatId = callback?.message?.chat?.id;
+      if (chatId === undefined || chatId === null) {
+        await settleCrewTelegramCallback(callback, "Не удалось");
+        return jsonOk({ ignored: true });
+      }
+      const replyTarget = String(chatId);
+      const resolved = await ctx.runQuery(internal.lib.identity.resolveUserByAddress, {
+        channel: "telegram",
+        address: replyTarget,
+      });
+      if (!resolved) {
+        await settleCrewTelegramCallback(callback, "Не найден пользователь");
+        return jsonOk({ ignored: true });
+      }
+      try {
+        await ctx.runMutation(internalAny.crew.decideTask, {
+          taskId: parsed.taskId,
+          userId: resolved.userId,
+          decision: parsed.decision,
+          channel: "telegram",
+          replyTarget,
+        });
+        await settleCrewTelegramCallback(callback, "Готово");
+      } catch (e) {
+        console.error(`crew callback failed: ${errMsg(e)}`);
+        await settleCrewTelegramCallback(callback, "Не удалось");
+      }
+      return jsonOk({ ok: true });
+    }
+
     // Only fresh, private, human messages. Ignore edits/channel posts/bots.
     const msg = update?.message;
     if (!msg || update?.edited_message || update?.channel_post) {
@@ -208,6 +340,15 @@ http.route({
     });
     if (!resolved) return jsonOk({ ignored: true });
 
+    if (await tryHandleCrewTextDecision(ctx, {
+      userId: resolved.userId,
+      text,
+      channel: "telegram",
+      replyTarget,
+    })) {
+      return jsonOk({ ok: true, crew: true });
+    }
+
     await ctx.runMutation(internal.messages.enqueue, {
       handle,
       userId: resolved.userId,
@@ -239,6 +380,20 @@ http.route({
     }
     return jsonOk({ ok: true });
   }),
+});
+
+// Fleet login handoff landing. Token validation is fail-closed and single-use-ish:
+// invalid / expired / already-opened links all render a generic 404 page. The
+// live Chrome view itself is intentionally not faked here; CDP is loopback-only
+// inside the tenant container until the controller/ops host proxy exists.
+http.route({
+  pathPrefix: "/login/",
+  method: "GET",
+  handler: httpAction(async (ctx, request) =>
+    loginHandoffGetResponse(request, (token) =>
+      ctx.runMutation(internalAny.loginHandoff.consumeForHttp, { token }),
+    ),
+  ),
 });
 
 // ---------------------------------------------------------------------------

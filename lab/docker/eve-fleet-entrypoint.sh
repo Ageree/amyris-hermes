@@ -19,6 +19,8 @@ PROFILE="${HERMES_HOME:-/data/tenants/default}/chrome-profile"
 #     Per-tenant profile under HERMES_HOME (persistent + GCS-mirrored = the user's
 #     Yandex login + linked card). A NON-default user-data-dir is required for headless.
 mkdir -p "$PROFILE"
+# Persistent bind mounts can carry stale Chrome Singleton* files across restarts.
+rm -f "$PROFILE"/Singleton*
 CHROME="$(command -v chromium || command -v chromium-browser || echo /usr/bin/chromium)"
 "$CHROME" --headless=new --remote-debugging-port=9222 \
     --user-data-dir="$PROFILE" --remote-allow-origins="*" \

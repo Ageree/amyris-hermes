@@ -155,6 +155,10 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
         type === "email" ||
         type === "verification" ||
         (type === "oauth" && profile.emailVerified !== false);
+      // Phone ownership is proven only by the post-token verification callback.
+      // A bare phone sign-up can assert ANY phone before OTP verification, so it
+      // must not link to or reserve an existing phone number.
+      const phoneProven = type === "verification";
 
       // Cross-provider dedupe — link to an existing row ONLY when proven. An
       // unverified sign-up to a taken email is refused (no squatting / takeover).
@@ -176,15 +180,21 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
           .query("users")
           .withIndex("phone", (q) => q.eq("phone", phone))
           .first();
-        if (byPhone) return byPhone._id;
+        if (byPhone) {
+          if (phoneProven) return byPhone._id;
+          throw new Error(
+            "an account with this phone already exists — sign in instead",
+          );
+        }
       }
 
       // isOperator (user #0, unlimited) is set ONLY from a proven operator email.
       const isOperator = emailProven && email === OPERATOR_EMAIL;
+      const storedPhone = phoneProven ? phone : undefined;
       const userId = await db.insert("users", {
         email,
-        phone,
-        phoneVerificationTime: type === "verification" && phone ? now : undefined,
+        phone: storedPhone,
+        phoneVerificationTime: storedPhone ? now : undefined,
         name: typeof profile.name === "string" ? profile.name : undefined,
         image: typeof profile.image === "string" ? profile.image : undefined,
         isOperator,

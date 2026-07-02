@@ -29,6 +29,7 @@ export type EnqueueArgs = {
   userNumber: string;
   text: string;
   mediaUrl?: string;
+  crewTaskId?: Id<"crewTasks">;
 };
 
 export async function enqueueImpl(
@@ -59,6 +60,7 @@ export async function enqueueImpl(
     userNumber: args.userNumber,
     text: args.text,
     mediaUrl: args.mediaUrl,
+    crewTaskId: args.crewTaskId,
     status: "queued",
     receivedAt: Date.now(),
   });
@@ -73,6 +75,7 @@ export const enqueue = internalMutation({
     userNumber: v.string(),
     text: v.string(),
     mediaUrl: v.optional(v.string()),
+    crewTaskId: v.optional(v.id("crewTasks")),
   },
   returns: v.id("messages"),
   handler: async (ctx, args) => enqueueImpl(ctx, args),
@@ -151,8 +154,45 @@ const claimReturns = v.union(
     userNumber: v.string(),
     text: v.string(),
     mediaUrl: v.union(v.string(), v.null()),
+    crewTaskId: v.union(v.id("crewTasks"), v.null()),
   }),
 );
+
+export type ClaimedMessageProjection = {
+  id: Id<"messages">;
+  handle: string;
+  userId: Id<"users"> | null;
+  channel: "imessage" | "telegram" | null;
+  replyTarget: string;
+  userNumber: string;
+  text: string;
+  mediaUrl: string | null;
+  crewTaskId: Id<"crewTasks"> | null;
+};
+
+export function projectClaimedMessage(next: {
+  _id: Id<"messages">;
+  handle: string;
+  userId?: Id<"users">;
+  channel?: "imessage" | "telegram";
+  replyTarget?: string;
+  userNumber: string;
+  text: string;
+  mediaUrl?: string;
+  crewTaskId?: Id<"crewTasks">;
+}): ClaimedMessageProjection {
+  return {
+    id: next._id,
+    handle: next.handle,
+    userId: next.userId ?? null,
+    channel: next.channel ?? null,
+    replyTarget: next.replyTarget ?? next.userNumber,
+    userNumber: next.userNumber,
+    text: next.text,
+    mediaUrl: next.mediaUrl ?? null,
+    crewTaskId: next.crewTaskId ?? null,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // claimNext — KEPT for the operator/legacy launchd worker. Scoped to UNASSIGNED
@@ -181,16 +221,7 @@ export const claimNext = mutation({
       .first();
     if (!next) return null;
     await ctx.db.patch(next._id, { status: "processing", claimedAt: Date.now() });
-    return {
-      id: next._id,
-      handle: next.handle,
-      userId: next.userId ?? null,
-      channel: next.channel ?? null,
-      replyTarget: next.replyTarget ?? next.userNumber,
-      userNumber: next.userNumber,
-      text: next.text,
-      mediaUrl: next.mediaUrl ?? null,
-    };
+    return projectClaimedMessage(next);
   },
 });
 
@@ -227,16 +258,7 @@ export const claimNextForUser = mutation({
       await ctx.db.patch(instance._id, { lastActiveAt: Date.now() });
     }
 
-    return {
-      id: next._id,
-      handle: next.handle,
-      userId: next.userId ?? null,
-      channel: next.channel ?? null,
-      replyTarget: next.replyTarget ?? next.userNumber,
-      userNumber: next.userNumber,
-      text: next.text,
-      mediaUrl: next.mediaUrl ?? null,
-    };
+    return projectClaimedMessage(next);
   },
 });
 
@@ -295,16 +317,7 @@ export const claimNextAny = mutation({
     const next = candidates.find((m) => !m.userId || !fleeted.has(m.userId));
     if (!next) return null;
     await ctx.db.patch(next._id, { status: "processing", claimedAt: Date.now() });
-    return {
-      id: next._id,
-      handle: next.handle,
-      userId: next.userId ?? null,
-      channel: next.channel ?? null,
-      replyTarget: next.replyTarget ?? next.userNumber,
-      userNumber: next.userNumber,
-      text: next.text,
-      mediaUrl: next.mediaUrl ?? null,
-    };
+    return projectClaimedMessage(next);
   },
 });
 

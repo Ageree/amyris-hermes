@@ -61,6 +61,17 @@ export default defineSchema({
     .index("by_user_channel", ["userId", "channel"])
     .index("by_status_expiry", ["status", "expiresAt"]), // cron: expire stale active tokens
 
+  // Short-lived fleet browser login handoff URLs. Minted by a scoped worker when
+  // order.py returns NEED_LOGIN; consumed by GET /login/<token>. The token is the
+  // bearer secret, so rows are TTL'd and single-use-ish via consumedAt.
+  loginHandoffTokens: defineTable({
+    userId: v.id("users"),
+    token: v.string(),
+    expiresAt: v.number(),
+    createdAt: v.number(),
+    consumedAt: v.optional(v.number()),
+  }).index("by_token", ["token"]),
+
   // Durable inbound queue — EVOLVED. userId/channel/replyTarget added (optional
   // during migration, required after backfill). userNumber kept for back-compat.
   messages: defineTable({
@@ -80,6 +91,7 @@ export default defineSchema({
     claimedAt: v.optional(v.number()),
     completedAt: v.optional(v.number()),
     error: v.optional(v.string()),
+    crewTaskId: v.optional(v.id("crewTasks")),
   })
     .index("by_handle", ["handle"])                          // legacy global idempotency
     .index("by_channel_handle", ["channel", "handle"])       // idempotency keyed by (channel,handle)
@@ -87,6 +99,44 @@ export default defineSchema({
     .index("by_status_user", ["status", "userId", "receivedAt"]) // claimNextForUser (fleet)
     .index("by_user", ["userNumber", "receivedAt"])          // legacy recentForUser
     .index("by_userId", ["userId", "receivedAt"]),           // recentForUser by userId
+
+  // Directed crew link: owner sees peer under nickname. Accept creates the
+  // reverse active link too.
+  crewLinks: defineTable({
+    ownerUserId: v.id("users"),
+    peerUserId: v.id("users"),
+    nickname: v.string(),
+    status: v.union(v.literal("invited"), v.literal("active"), v.literal("revoked")),
+    createdAt: v.number(),
+    acceptedAt: v.optional(v.number()),
+  })
+    .index("by_owner_nick", ["ownerUserId", "nickname"])
+    .index("by_owner_status", ["ownerUserId", "status"])
+    .index("by_peer_status", ["peerUserId", "status"]),
+
+  crewTasks: defineTable({
+    fromUserId: v.id("users"),
+    toUserId: v.id("users"),
+    request: v.string(),
+    status: v.union(
+      v.literal("pending_approval"),
+      v.literal("declined"),
+      v.literal("running"),
+      v.literal("result_pending"),
+      v.literal("done"),
+      v.literal("failed"),
+      v.literal("expired"),
+    ),
+    resultText: v.optional(v.string()),
+    messageId: v.optional(v.id("messages")),
+    createdAt: v.number(),
+    approvedAt: v.optional(v.number()),
+    completedAt: v.optional(v.number()),
+    expiresAt: v.number(),
+  })
+    .index("by_to_status", ["toUserId", "status", "createdAt"])
+    .index("by_from", ["fromUserId", "createdAt"])
+    .index("by_status_expiry", ["status", "expiresAt"]),
 
   // Connect intents (Composio) — add userId/channel/replyTarget so a resume
   // message routes to the right user/channel.

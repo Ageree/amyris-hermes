@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { assertWorker, channelValidator } from "./lib/auth";
+import { mintLoginHandoffImpl } from "./loginHandoff";
 
 // ---------------------------------------------------------------------------
 // fleet.ts (design §4) — the desired-state map the controller reconciles toward
@@ -122,6 +123,18 @@ export const requestInstanceInternal = internalMutation({
   }),
   handler: async (ctx, { userId, channel }) => {
     return await requestInstanceImpl(ctx, { userId, channel });
+  },
+});
+
+// Browser login handoff: scoped drainer sees order.py NEED_LOGIN and asks for a
+// short-lived URL. The URL is sent to exactly that user's channel; the token row
+// is consumed by GET /login/<token> in http.ts.
+export const mintLoginHandoff = mutation({
+  args: { workerSecret: v.string(), userId: v.id("users") },
+  returns: v.object({ url: v.string(), expiresAt: v.number() }),
+  handler: async (ctx, { workerSecret, userId }) => {
+    assertWorker(workerSecret);
+    return await mintLoginHandoffImpl(ctx, userId);
   },
 });
 

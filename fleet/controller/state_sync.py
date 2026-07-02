@@ -29,7 +29,7 @@ RunCmd = Callable[..., subprocess.CompletedProcess]
 # whole rsync (caught live: every mirror/rehydrate failed). One combined regex,
 # matched on the path tail, drops live lock / SQLite WAL+journal / Chrome singleton
 # files so a restored snapshot can't carry a stale lock that corrupts state.
-_EXCLUDE_REGEX = r".*\.lock$|.*SingletonLock$|.*-journal$|.*-wal$"
+_EXCLUDE_REGEX = r".*\.lock$|.*SingletonLock$|.*SingletonSocket$|.*SingletonCookie$|.*-journal$|.*-wal$"
 
 
 def _build_exclude_args() -> list[str]:

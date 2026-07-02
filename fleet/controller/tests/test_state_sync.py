@@ -72,7 +72,14 @@ class TestRehydrate:
         # gcloud with "nothing to repeat") that matches the lock/WAL/journal/
         # singleton files but spares real state files.
         rx = re.compile(_exclude_value(calls[0]))  # raises if not a valid regex
-        for f in ("foo.lock", "default/SingletonLock", "hermes.db-journal", "hermes.db-wal"):
+        for f in (
+            "foo.lock",
+            "default/SingletonLock",
+            "default/SingletonSocket",
+            "default/SingletonCookie",
+            "hermes.db-journal",
+            "hermes.db-wal",
+        ):
             assert rx.match(f), f"exclude regex should drop {f!r}"
         for keep in ("hermes.db", "config.json", "logins.json"):
             assert not rx.match(keep), f"exclude regex must NOT drop {keep!r}"
@@ -113,7 +120,7 @@ class TestMirror:
         gcs_idx = next(i for i, c in enumerate(cmd) if "gs://" in c)
         assert local_idx < gcs_idx
 
-    def test_mirror_excludes_singleton_lock(self):
+    def test_mirror_excludes_chrome_singletons(self):
         calls = []
         def recording_run(cmd, **kwargs):
             calls.append(cmd)
@@ -123,6 +130,8 @@ class TestMirror:
         ss.mirror("userY")
         rx = re.compile(_exclude_value(calls[0]))
         assert rx.match("default/SingletonLock")
+        assert rx.match("default/SingletonSocket")
+        assert rx.match("default/SingletonCookie")
 
     def test_mirror_excludes_wal_files(self):
         calls = []

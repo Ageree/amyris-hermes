@@ -3,7 +3,7 @@
 // per service. No env needed (drainer.mjs validates env only when run as the loop).
 //   node control-plane/drainer/order-route.test.mjs
 import assert from "node:assert";
-import { buildOrderArgs, formatOrderReply } from "./drainer.mjs";
+import { appendLoginHandoff, buildOrderArgs, formatOrderReply } from "./drainer.mjs";
 
 // 1. food → address+item, default address when none given.
 let r = buildOrderArgs({ service: "food", item: "бургер" }, "Тверская 7");
@@ -49,5 +49,46 @@ assert.ok(!/NEED_LOGIN/.test(loginReply), "must not leak the raw signal token");
 assert.ok(/3-D Secure/.test(formatOrderReply({ ok: false, needs: "NEED_3DS" }, "taxi")));
 // an unknown needs falls through to the honest generic failure.
 assert.ok(/не получилось/.test(formatOrderReply({ ok: false, needs: "WHATEVER" }, "food")));
+
+// 8. NEED_LOGIN appends a minted handoff URL without leaking the raw engine signal.
+{
+  const calls = [];
+  const reply = await appendLoginHandoff(
+    loginReply,
+    { ok: false, status: "blocked", needs: "NEED_LOGIN" },
+    { userId: "users:tenant1" },
+    {
+      convex: async (kind, path, args) => {
+        calls.push({ kind, path, args });
+        return { url: "https://handoff.test/login/tok_123", expiresAt: Date.now() + 900_000 };
+      },
+      log: () => {},
+    },
+  );
+  assert.deepEqual(calls, [{
+    kind: "mutation",
+    path: "fleet:mintLoginHandoff",
+    args: { userId: "users:tenant1" },
+  }]);
+  assert.ok(reply.includes("https://handoff.test/login/tok_123"));
+  assert.ok(!/NEED_LOGIN/.test(reply), "handoff reply must not leak the raw signal token");
+}
+
+// 9. Mint failures do not throw or block the existing NEED_LOGIN reply.
+{
+  const reply = await appendLoginHandoff(
+    loginReply,
+    { ok: false, needs: "NEED_LOGIN" },
+    { userId: "users:tenant1" },
+    {
+      convex: async () => {
+        throw new Error("not configured");
+      },
+      log: () => {},
+    },
+  );
+  assert.ok(/не удалось создать/.test(reply));
+  assert.ok(!/not configured/.test(reply), "internal mint error must not leak to the user");
+}
 
 console.log("order-route self-check PASS");

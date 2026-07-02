@@ -32,3 +32,34 @@ export const resolveUserByAddress = internalQuery({
     return { userId: binding.userId };
   },
 });
+
+export const freshestVerifiedBinding = internalQuery({
+  args: { userId: v.id("users") },
+  returns: v.union(
+    v.object({
+      channel: channelValidator,
+      address: v.string(),
+      lastInboundAt: v.union(v.number(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { userId }) => {
+    const rows = await ctx.db
+      .query("channelBindings")
+      .withIndex("by_user", (q) => q.eq("userId", userId))
+      .collect();
+    const verified = rows.filter((r) => r.verified);
+    if (!verified.length) return null;
+    verified.sort((a, b) => {
+      const aAt = a.lastInboundAt ?? a.createdAt;
+      const bAt = b.lastInboundAt ?? b.createdAt;
+      return bAt - aAt;
+    });
+    const best = verified[0];
+    return {
+      channel: best.channel,
+      address: best.address,
+      lastInboundAt: best.lastInboundAt ?? null,
+    };
+  },
+});

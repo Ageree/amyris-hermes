@@ -1,6 +1,8 @@
 import { cronJobs } from "convex/server";
 import { internal } from "./_generated/api";
 
+const internalAny = internal as any;
+
 // ---------------------------------------------------------------------------
 // Scheduled jobs (design §4/§6). Each target is an internalMutation that is
 // PAGINATED + self-rescheduling, so a cron tick never exceeds the per-mutation
@@ -44,6 +46,13 @@ crons.interval(
   "expire stale pairing tokens",
   { minutes: 30 },
   internal.pairing.expireStaleTokens,
+  {},
+);
+
+crons.interval(
+  "expire stale crew tasks",
+  { minutes: 30 },
+  internalAny.crew.expirePending,
   {},
 );
 

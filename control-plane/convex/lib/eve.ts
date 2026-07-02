@@ -129,6 +129,7 @@ export async function sendTelegram(opts: {
   token: string;
   chatId: string;
   text: string;
+  replyMarkup?: unknown;
 }): Promise<boolean> {
   const api = `https://api.telegram.org/bot${opts.token}`;
   const body = (opts.text || "").trim();
@@ -142,7 +143,7 @@ export async function sendTelegram(opts: {
     return r.ok;
   };
   try {
-    if (await post("sendRichMessage", { chat_id: opts.chatId, rich_message: { markdown: body } })) {
+    if (!opts.replyMarkup && await post("sendRichMessage", { chat_id: opts.chatId, rich_message: { markdown: body } })) {
       return true;
     }
   } catch {
@@ -150,7 +151,11 @@ export async function sendTelegram(opts: {
   }
   try {
     // Plain text (no parse_mode) — the raw reply renders fine and can't 400 on bad HTML.
-    return await post("sendMessage", { chat_id: opts.chatId, text: body });
+    return await post("sendMessage", {
+      chat_id: opts.chatId,
+      text: body,
+      ...(opts.replyMarkup ? { reply_markup: opts.replyMarkup } : {}),
+    });
   } catch {
     return false;
   }

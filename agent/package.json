@@ -7,7 +7,7 @@
     "#evals/*": "./evals/*"
   },
   "scripts": {
-    "build": "eve build",
+    "build": "cd agent && eve build",
     "dev": "eve dev",
     "lint": "eslint .",
     "start": "eve start",

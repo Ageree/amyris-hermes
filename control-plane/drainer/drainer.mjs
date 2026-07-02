@@ -749,10 +749,10 @@ function runOrder(service, params) {
 }
 
 // A blocking signal from order.py (`needs`) → a friendly instruction. NEVER leaks the
-// live-view handoff token (that URL is minted by the onboarding step, human-gated).
+// raw engine signal; the live-view handoff URL is appended separately after minting.
 const NEEDS_MSG = {
   NEED_LOGIN:
-    "нужно один раз войти в Яндекс и привязать карту в твоём браузере — пришлю ссылку для входа, и дальше всё соберу сам.",
+    "нужно один раз войти в Яндекс и привязать карту в твоём браузере — после входа повтори заказ, и дальше всё соберу сам.",
   NEED_CARD: "не вижу привязанной карты в Яндексе — добавь карту, и я закончу заказ.",
   NEED_3DS:
     "банк просит подтверждение (3-D Secure) — подтверди в приложении банка и скажи «повтори».",
@@ -773,6 +773,23 @@ function formatOrderReply(res, service = "food") {
   if (res.needs && NEEDS_MSG[res.needs]) return NEEDS_MSG[res.needs];
   const what = service === "taxi" ? "рассчитать поездку" : "собрать заказ";
   return `не получилось ${what} автоматически (${res.status || "ошибка"}). попробую иначе или подскажи детали.`;
+}
+
+async function appendLoginHandoff(reply, res, row, deps = {}) {
+  if (res?.needs !== "NEED_LOGIN") return reply;
+  const userId = row?.userId || USER_ID;
+  if (!userId) return reply;
+  const callConvex = deps.convex || convex;
+  const writeLog = deps.log || log;
+  try {
+    const handoff = await callConvex("mutation", "fleet:mintLoginHandoff", { userId });
+    const url = typeof handoff?.url === "string" ? handoff.url : "";
+    if (!url) throw new Error("empty handoff url");
+    return `${reply}\n\nВременная ссылка для входа (15 минут): ${url}`;
+  } catch (e) {
+    writeLog(`login handoff mint failed user=${userId}: ${e.message}`);
+    return `${reply}\n\nСсылку для входа сейчас не удалось создать; повтори заказ через минуту, и я попробую ещё раз.`;
+  }
 }
 
 // Pure routing (unit-tested): map an order to the engine's per-service params/ack, or a
@@ -820,39 +837,104 @@ async function handleOrder(row, order) {
   }
   if (!(res.ok && res.final_result))
     log(`order id=${row.id} FAILED:`, JSON.stringify(res).slice(0, 200));
-  const reply = formatOrderReply(res, service);
+  const reply = await appendLoginHandoff(formatOrderReply(res, service), res, row);
   await sendReply(row, reply);
   await convex("mutation", "messages:complete", { id: row.id, reply });
   log(`order done id=${row.id} service=${service} ok=${!!res.ok}`);
 }
 
 // ---- Drain loop -------------------------------------------------------------------
-async function processRow(row) {
-  const order = await classifyOrder(row.text);
-  if (order.is_order) return handleOrder(row, order);
+const defaultProcessDeps = {
+  classifyOrder,
+  handleOrder,
+  convex,
+  recallFacts,
+  callEve,
+  extractMemories,
+  addFact,
+  rememberRemote,
+  sendReply,
+  log,
+};
 
+function shortCrewFailureReason(error) {
+  const msg = String(error?.message || error || "eve failed")
+    .replace(/\s+/g, " ")
+    .trim();
+  return (msg || "eve failed").slice(0, 160);
+}
+
+async function failCrewTask(row, error, deps) {
+  const reason = shortCrewFailureReason(error);
+  try {
+    await deps.convex("mutation", "crew:failTask", {
+      taskId: row.crewTaskId,
+      reason,
+    });
+  } catch (e) {
+    deps.log(`crew failTask failed id=${row.id} task=${row.crewTaskId}: ${e.message}`);
+  }
+}
+
+async function runEveForRow(row, deps) {
   const userKey = row.userId || row.userNumber; // legacy operator → his number
-  const history = await convex("query", "messages:recentForUser", {
+  const history = await deps.convex("query", "messages:recentForUser", {
     userId: row.userId ?? undefined,
     userNumber: row.userId ? undefined : row.userNumber,
     limit: 10,
   });
-  const facts = await recallFacts(userKey, row.text);
-  const raw = await callEve(history || [], facts, row.text);
-  const { cleaned, memories } = extractMemories(raw); // harvest [[remember:…]] markers
+  const facts = await deps.recallFacts(userKey, row.text);
+  const raw = await deps.callEve(history || [], facts, row.text);
+  const { cleaned, memories } = deps.extractMemories(raw); // harvest [[remember:…]] markers
   for (const f of memories) {
-    addFact(userKey, f);
-    await rememberRemote(userKey, f, "explicit_fact");
+    deps.addFact(userKey, f);
+    await deps.rememberRemote(userKey, f, "explicit_fact");
   }
-  await sendReply(row, cleaned);
-  await convex("mutation", "messages:complete", { id: row.id, reply: cleaned });
-  await rememberRemote(
-    userKey,
-    `User: ${row.text}\nAssistant: ${cleaned}`,
+  return { userKey, facts, cleaned, memories };
+}
+
+async function processCrewRow(row, deps) {
+  let turn;
+  try {
+    turn = await runEveForRow(row, deps);
+    if (!turn.cleaned) throw new Error("eve returned empty crew reply");
+  } catch (e) {
+    await failCrewTask(row, e, deps);
+    throw e;
+  }
+
+  await deps.convex("mutation", "crew:submitResult", {
+    taskId: row.crewTaskId,
+    resultText: turn.cleaned,
+  });
+  await deps.convex("mutation", "messages:complete", { id: row.id, reply: turn.cleaned });
+  await deps.rememberRemote(
+    turn.userKey,
+    `User: ${row.text}\nAssistant: ${turn.cleaned}`,
     "conversation_turn",
   );
-  log(
-    `done id=${row.id} ch=${row.channel || "imessage"} facts=${facts.length}+${memories.length} -> "${cleaned.slice(0, 60)}"`,
+  deps.log(
+    `crew done id=${row.id} task=${row.crewTaskId} facts=${turn.facts.length}+${turn.memories.length} -> "${turn.cleaned.slice(0, 60)}"`,
+  );
+}
+
+async function processRow(row, depsArg = {}) {
+  const deps = { ...defaultProcessDeps, ...depsArg };
+  if (row.crewTaskId) return processCrewRow(row, deps);
+
+  const order = await deps.classifyOrder(row.text);
+  if (order.is_order) return deps.handleOrder(row, order);
+
+  const turn = await runEveForRow(row, deps);
+  await deps.sendReply(row, turn.cleaned);
+  await deps.convex("mutation", "messages:complete", { id: row.id, reply: turn.cleaned });
+  await deps.rememberRemote(
+    turn.userKey,
+    `User: ${row.text}\nAssistant: ${turn.cleaned}`,
+    "conversation_turn",
+  );
+  deps.log(
+    `done id=${row.id} ch=${row.channel || "imessage"} facts=${turn.facts.length}+${turn.memories.length} -> "${turn.cleaned.slice(0, 60)}"`,
   );
 }
 
@@ -917,6 +999,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
 export {
   ORDER_HINT,
   formatOrderReply,
+  appendLoginHandoff,
   classifyOrder,
   buildOrderArgs,
   parseRich,
@@ -928,4 +1011,5 @@ export {
   foldEvent,
   selectReply,
   claimSpec,
+  processRow,
 };
