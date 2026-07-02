@@ -29,19 +29,21 @@ Reconcile state machine (per instance):
   5. all other combinations
        -> no action (skip)
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional, Protocol
+from secrets import SecretManager
+from typing import Any, Callable, Protocol
 
 from config import ControllerConfig
 from convex_admin import ConvexAdminClient
 from docker_driver import DockerDriver
+from gce_driver import GceVmConfig, GceVmDriver
 from placement import choose_host
-from secrets import SecretManager
 from state_sync import StateSync
 
 logger = logging.getLogger(__name__)
@@ -51,13 +53,31 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
+class RuntimeDriver(Protocol):
+    def run(
+        self,
+        image: str,
+        name: str,
+        env: dict[str, str],
+        mounts: list[str] | None = None,
+    ) -> str: ...
+
+    def stop(self, name_or_id: str) -> None: ...
+
+    def inspect(self, name_or_id: str) -> dict[str, Any] | None: ...
+
+    def ps(self) -> list[dict[str, Any]]: ...
+
+    def is_running(self, name_or_id: str) -> bool: ...
+
+
 @dataclass
 class ControllerDeps:
     """All collaborators needed by reconcile_once."""
 
     cfg: ControllerConfig
     convex: ConvexAdminClient
-    docker: DockerDriver
+    docker: RuntimeDriver
     state_sync: StateSync
     secrets: SecretManager
     # clock: injectable for tests
@@ -71,7 +91,7 @@ class ControllerDeps:
     # relaunching until desired/wantsAt is re-asserted.
     crash_counts: dict[str, int] = field(default_factory=dict)
     # last heartbeatAt observed per user (to detect a healthy advance between ticks)
-    last_heartbeat_seen: dict[str, Optional[float]] = field(default_factory=dict)
+    last_heartbeat_seen: dict[str, float | None] = field(default_factory=dict)
     # users whose crash-loop tripped the guard, mapped to the wantsAt/desired
     # marker that was current when we blocked them. A change to that marker means
     # desired was re-asserted -> clear the block and allow a fresh launch.
@@ -85,7 +105,7 @@ class ControllerDeps:
 _LAUNCH_STATUSES = {"provisioning", "stopped", "error"}
 
 
-def _decide(instance: dict, deps: ControllerDeps) -> str:
+def _decide(instance: dict, deps: ControllerDeps) -> str:  # noqa: PLR0911
     """Return an action keyword for this instance.
 
     Actions:
@@ -120,7 +140,9 @@ def _decide(instance: dict, deps: ControllerDeps) -> str:
             return "stop"
         return "noop"
 
-    logger.warning("Unknown desired state %r for user %s", desired, instance.get("userId"))
+    logger.warning(
+        "Unknown desired state %r for user %s", desired, instance.get("userId")
+    )
     return "skip"
 
 
@@ -174,7 +196,10 @@ def _record_crash_relaunch(instance: dict, deps: ControllerDeps) -> bool:
     prev_hb = deps.last_heartbeat_seen.get(user_id, "__unset__")
 
     healthy_advance = (
-        hb is not None and prev_hb != "__unset__" and prev_hb is not None and hb > prev_hb
+        hb is not None
+        and prev_hb != "__unset__"
+        and prev_hb is not None
+        and hb > prev_hb
     )
     if healthy_advance:
         deps.crash_counts[user_id] = 0
@@ -186,10 +211,13 @@ def _record_crash_relaunch(instance: dict, deps: ControllerDeps) -> bool:
         logger.error(
             "ALERT: user=%s crash-looped %d relaunches with no healthy heartbeat — "
             "marking error and suspending relaunch until desired is re-asserted",
-            user_id, deps.crash_counts[user_id],
+            user_id,
+            deps.crash_counts[user_id],
         )
         try:
-            deps.convex.mark_error(user_id, "crash-loop: container died before first heartbeat")
+            deps.convex.mark_error(
+                user_id, "crash-loop: container died before first heartbeat"
+            )
         except Exception as exc:
             logger.error("markError failed user=%s: %s", user_id, exc)
         deps.crash_blocked[user_id] = _desired_marker(instance)
@@ -197,19 +225,24 @@ def _record_crash_relaunch(instance: dict, deps: ControllerDeps) -> bool:
     return False
 
 
-def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref: str) -> dict[str, str]:
+def _build_env(
+    user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref: str
+) -> dict[str, str]:
     """Build the env dict for docker run.
 
     Secret VALUES come from the OS environment; they are passed through
     to the container but never logged by this function.
     """
+
     def _get(name: str) -> str:
         v = os.environ.get(name, "")
         if not v:
             logger.warning("env var %s is not set — container may misbehave", name)
         return v
 
-    bu_name = "".join(c if (c.isalnum() or c in "_-") else "-" for c in user_id) or "tenant"
+    bu_name = (
+        "".join(c if (c.isalnum() or c in "_-") else "-" for c in user_id) or "tenant"
+    )
     cdp_url = "http://127.0.0.1:9222"
 
     # Model endpoint MUST match the funded key or EVERY model call 401s (Bug C3).
@@ -249,6 +282,13 @@ def _build_env(user_id: str, instance_id: str, cfg: ControllerConfig, secret_ref
         "SENDBLUE_FROM_NUMBER": _get("SENDBLUE_FROM_NUMBER"),
         "TELEGRAM_BOT_TOKEN": _get("TELEGRAM_BOT_TOKEN"),
         "EXA_API_KEY": _get("EXA_API_KEY"),
+        "SITES_PUBLISH_SECRET": _get("SITES_PUBLISH_SECRET"),
+        "SUPERMEMORY_API_KEY": _get("SUPERMEMORY_API_KEY"),
+        "SUPERMEMORY_BASE_URL": os.environ.get(
+            "SUPERMEMORY_BASE_URL", "https://api.supermemory.ai"
+        ),
+        "SUPERMEMORY_ENABLED": os.environ.get("SUPERMEMORY_ENABLED", "1"),
+        "SUPERMEMORY_WRITE_ENABLED": os.environ.get("SUPERMEMORY_WRITE_ENABLED", "1"),
         # Eve brain (in-container): the entrypoint runs
         #   node /app/eve/.output/server/index.mjs
         # on EVE_PORT bound to 127.0.0.1; the scoped poller calls EVE_URL with
@@ -298,24 +338,35 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
     # containers every ~3s.
     if _crash_block_active(instance, deps):
         logger.warning(
-            "launch suppressed for user=%s — crash-loop blocked (awaiting desired re-assert)",
+            "launch suppressed for user=%s — crash-loop blocked "
+            "(awaiting desired re-assert)",
             user_id,
         )
         return {"action": "launch_suppressed_crashloop", "userId": user_id}
 
-    # Placement: we need a real hosts_state; for now build a minimal one
-    # from the running container counts on each host (best-effort).
-    hosts_state = _build_hosts_state(cfg, deps.docker)
-    host = choose_host(hosts_state, cfg.ram_headroom_pct)
-    if host is None:
-        logger.error("All hosts full — cannot launch user=%s", user_id)
-        return {"action": "launch_refused", "userId": user_id, "reason": "hosts_full"}
+    if cfg.runtime_backend == "gce_vm":
+        host = _container_name(user_id)
+    else:
+        # Placement: we need a real hosts_state; for now build a minimal one
+        # from the running container counts on each host (best-effort).
+        hosts_state = _build_hosts_state(cfg, deps.docker)
+        host = choose_host(hosts_state, cfg.ram_headroom_pct)
+        if host is None:
+            logger.error("All hosts full — cannot launch user=%s", user_id)
+            return {
+                "action": "launch_refused",
+                "userId": user_id,
+                "reason": "hosts_full",
+            }
 
     # Per-instance secret is OFF by default (v1 uses the shared WORKER_SECRET; the
     # per-instance read isn't wired in the worker). Only mint one when the feature
     # flag is on, so we don't create empty, enumerable Secret Manager secrets.
-    secret_ref = deps.secrets.ensure_worker_secret(user_id) if cfg.per_instance_secrets else ""
-    deps.state_sync.rehydrate(user_id)
+    secret_ref = (
+        deps.secrets.ensure_worker_secret(user_id) if cfg.per_instance_secrets else ""
+    )
+    if cfg.runtime_backend != "gce_vm":
+        deps.state_sync.rehydrate(user_id)
 
     env = _build_env(user_id, instance_id, cfg, secret_ref)
     mounts = _build_mounts(user_id)
@@ -329,7 +380,9 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
         deps.failure_counts[user_id] = count
         if count >= cfg.max_launch_failures:
             logger.error(
-                "ALERT: user=%s exceeded MAX_LAUNCH_FAILURES (%d)", user_id, cfg.max_launch_failures
+                "ALERT: user=%s exceeded MAX_LAUNCH_FAILURES (%d)",
+                user_id,
+                cfg.max_launch_failures,
             )
             try:
                 deps.convex.mark_error(user_id, str(exc))
@@ -352,14 +405,22 @@ def _do_launch(instance: dict, deps: ControllerDeps) -> dict:
 
     if not claim_result.get("claimed", False):
         logger.info(
-            "claim_for_launch: not claimed (race lost) user=%s — stopping duplicate", user_id
+            "claim_for_launch: not claimed (race lost) user=%s — stopping duplicate",
+            user_id,
         )
         deps.docker.stop(name)
         return {"action": "launch_duplicate_stopped", "userId": user_id}
 
     deps.failure_counts[user_id] = 0
-    logger.info("launch ok user=%s container=%.12s host=%s", user_id, container_id, host)
-    return {"action": "launched", "userId": user_id, "containerId": container_id, "host": host}
+    logger.info(
+        "launch ok user=%s container=%.12s host=%s", user_id, container_id, host
+    )
+    return {
+        "action": "launched",
+        "userId": user_id,
+        "containerId": container_id,
+        "host": host,
+    }
 
 
 def _do_relaunch(instance: dict, deps: ControllerDeps) -> dict:
@@ -381,7 +442,8 @@ def _do_relaunch(instance: dict, deps: ControllerDeps) -> dict:
     # hasn't been re-asserted), do NOT hammer docker again.
     if _crash_block_active(instance, deps):
         logger.warning(
-            "relaunch suppressed for user=%s — crash-loop blocked (awaiting desired re-assert)",
+            "relaunch suppressed for user=%s — crash-loop blocked "
+            "(awaiting desired re-assert)",
             user_id,
         )
         return {"action": "relaunch_suppressed_crashloop", "userId": user_id}
@@ -417,7 +479,8 @@ def _do_stop(instance: dict, deps: ControllerDeps) -> dict:
 
     # Stop first (quiesce), then mirror (safe to read filesystem)
     deps.docker.stop(name)
-    deps.state_sync.mirror(user_id)
+    if deps.cfg.runtime_backend != "gce_vm":
+        deps.state_sync.mirror(user_id)
 
     try:
         deps.convex.mark_stopped(user_id)
@@ -432,7 +495,7 @@ def _do_stop(instance: dict, deps: ControllerDeps) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _build_hosts_state(cfg: ControllerConfig, docker: DockerDriver) -> list[dict]:
+def _build_hosts_state(cfg: ControllerConfig, docker: RuntimeDriver) -> list[dict]:
     """Build a minimal hosts_state list.
 
     In a real deployment this would query host metrics (RAM %).
@@ -442,7 +505,9 @@ def _build_hosts_state(cfg: ControllerConfig, docker: DockerDriver) -> list[dict
     try:
         running_containers = docker.ps()
     except Exception:
-        logger.warning("docker.ps() failed; placement will use zero counts", exc_info=True)
+        logger.warning(
+            "docker.ps() failed; placement will use zero counts", exc_info=True
+        )
         running_containers = []
 
     # Count by host name prefix (best-effort heuristic)
@@ -498,8 +563,12 @@ def reconcile_once(deps: ControllerDeps) -> list[dict]:
             elif action == "noop":
                 pass
             else:
-                logger.debug("skip user=%s status=%s desired=%s", user_id,
-                             instance.get("status"), instance.get("desired"))
+                logger.debug(
+                    "skip user=%s status=%s desired=%s",
+                    user_id,
+                    instance.get("status"),
+                    instance.get("desired"),
+                )
         except Exception as exc:
             logger.error("reconcile_once error for user=%s: %s", user_id, exc)
             actions.append({"action": "error", "userId": user_id, "error": str(exc)})
@@ -546,7 +615,7 @@ def _mirror_running_tenants(deps: ControllerDeps) -> int:
 # ---------------------------------------------------------------------------
 
 
-def run(cfg: Optional[ControllerConfig] = None, *, once: bool = False) -> None:
+def run(cfg: ControllerConfig | None = None, *, once: bool = False) -> None:
     """Start the reconcile loop.  Never exits unless `once=True`.
 
     Parameters
@@ -559,10 +628,28 @@ def run(cfg: Optional[ControllerConfig] = None, *, once: bool = False) -> None:
 
     logger.info("fleet-controller starting config=%s", cfg.redacted())
 
+    if cfg.runtime_backend == "gce_vm":
+        runtime: RuntimeDriver = GceVmDriver(
+            GceVmConfig(
+                project=cfg.gcp_project,
+                zone=cfg.gce_zone,
+                machine_type=cfg.gce_machine_type,
+                boot_disk_size=cfg.gce_boot_disk_size,
+                service_account=cfg.gce_service_account,
+                network=cfg.gce_network,
+                subnetwork=cfg.gce_subnetwork,
+                scopes=cfg.gce_scopes,
+                tags=cfg.gce_tags,
+                labels=cfg.gce_labels,
+            )
+        )
+    else:
+        runtime = DockerDriver()
+
     deps = ControllerDeps(
         cfg=cfg,
         convex=ConvexAdminClient(cfg.convex_url),
-        docker=DockerDriver(),
+        docker=runtime,
         state_sync=StateSync(cfg.gcs_bucket),
         secrets=SecretManager(cfg.gcp_project),
     )
@@ -585,7 +672,10 @@ def run(cfg: Optional[ControllerConfig] = None, *, once: bool = False) -> None:
             return
 
         # Periodic crash-recovery mirror (deferred #2); MIRROR_INTERVAL_S=0 disables.
-        if cfg.mirror_interval_s > 0 and deps.now_fn() - last_mirror >= cfg.mirror_interval_s:
+        if (
+            cfg.mirror_interval_s > 0
+            and deps.now_fn() - last_mirror >= cfg.mirror_interval_s
+        ):
             _mirror_running_tenants(deps)
             last_mirror = deps.now_fn()
 

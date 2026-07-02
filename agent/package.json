@@ -9,7 +9,9 @@
   "scripts": {
     "build": "eve build",
     "dev": "eve dev",
+    "lint": "eslint .",
     "start": "eve start",
+    "test": "node --test scripts/*.test.ts",
     "typecheck": "tsc"
   },
   "dependencies": {

@@ -1,50 +1,44 @@
 @import "tailwindcss";
 
 /* ===========================================================================
-   dhizume — design system v3: "a masked muse in the dark"
+   Amyris — design system v4: ASCII meadow
 
-   Redesign read: gothic-romantic consumer AI product (an assistant that lives
-   in imessage & telegram and drives a REAL browser), fronted by the dhizume
-   mascot. Brand-locked: blue-violet near-black canvas, ONE deep-rose accent,
-   lowercase voice. Carried over: Geist type, surface/border ladder, motivated
-   motion (scroll-driven reveals, ambient rose glow, fine grain), tactile states.
+   Redesign read: the attached wallpaper is the brand. The UI recedes into a
+   mossy off-black canvas, one electric meadow accent, and quiet glass controls
+   over the ASCII sky/field image.
 
    Tailwind v4 CSS-first theme — tokens below become utilities
    (bg-canvas, text-lime, border-border, …). Lowercase voice is content, not CSS.
 
    NOTE: the accent token is still named `--color-lime` (and dim/deep siblings)
-   on purpose — 21 files use `text-lime`/`bg-lime` utilities, so recoloring the
-   VALUE here re-skins the whole app from one place. The name is historical; the
-   value is deep rose. Same trick as `--color-border` below.
+   on purpose — existing components use `text-lime`/`bg-lime` utilities, so
+   recoloring the VALUE here re-skins the whole app from one place.
 =========================================================================== */
 @theme {
-  /* surface ladder — off-black with a faint blue-violet tint, never pure #000 */
-  --color-canvas: #0a0810;
-  --color-surface: #131019;
-  --color-surface-2: #1a1622;
-  --color-surface-3: #221d2c;
+  /* surface ladder — off-black with a green tint, never pure #000 */
+  --color-canvas: #07120d;
+  --color-surface: #0f1c15;
+  --color-surface-2: #17261c;
+  --color-surface-3: #213123;
   /* kept as `border` (not renamed) so existing border-border/bg-border utilities
      across the dashboard + connect wizard keep working untouched */
-  --color-border: #2c2636;
-  --color-border-strong: #3b3447;
+  --color-border: #2d3c31;
+  --color-border-strong: #475a43;
 
   /* ink ladder — off-white, never pure #fff */
-  --color-ink: #f3f1f6;
-  --color-muted: #aaa4b6;
-  --color-faint: #797385;
+  --color-ink: #f6fff1;
+  --color-muted: #c7d9c2;
+  --color-faint: #899c82;
 
-  /* the one accent — deep rose / wine (live pulse + primary actions).
-     token name is legacy `lime`; value is rose (see header note). */
-  --color-lime: #e25a82;
-  --color-lime-dim: #c4426a;
-  --color-lime-deep: #a23355;
-  --color-danger: #ff7a7a;
+  /* the one accent — the bright ASCII meadow yellow-green from the wallpaper. */
+  --color-lime: #d6ff3f;
+  --color-lime-dim: #b9e638;
+  --color-lime-deep: #7da328;
+  --color-danger: #ff8b72;
 
   /* type
      - sans/mono: Geist (self-hosted via the geist package; no runtime network)
-     - display: Cormorant Garamond (next/font, latin subset inlined at build) —
-       a high-contrast romantic serif for big headlines only. Generates the
-       `font-display` utility in Tailwind v4. */
+     - display: Cormorant Garamond keeps the brand soft against the ASCII image. */
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
   --font-display: var(--font-cormorant), "Cormorant Garamond", ui-serif, Georgia, "Times New Roman", serif;
@@ -109,57 +103,44 @@
   pointer-events: none;
   z-index: 0;
   background:
-    radial-gradient(40% 50% at 70% 30%, color-mix(in oklab, var(--color-lime) 22%, transparent), transparent 70%),
-    radial-gradient(35% 45% at 25% 70%, color-mix(in oklab, var(--color-lime-deep) 14%, transparent), transparent 70%);
+    radial-gradient(40% 50% at 70% 30%, color-mix(in oklab, var(--color-lime) 20%, transparent), transparent 70%),
+    radial-gradient(35% 45% at 25% 70%, color-mix(in oklab, #4fb5ff 14%, transparent), transparent 70%);
   filter: blur(40px);
 }
 
 /* ---------------------------------------------------------------------------
-   Video background. A looping clip of dhizume on her throne in the moonlit hall,
-   fixed behind ALL content (z -2, over the canvas). Each clip is a boomerang
-   (forward then reverse) for a seamless loop. A dark scrim over it preserves
-   text contrast. Reduced-motion → the static poster image shows instead.
+   Wallpaper background. The animated ASCII meadow is fixed behind the public
+   landing. A directional vignette keeps the lower-left copy readable without
+   flattening the cloud/sky center of the image.
 --------------------------------------------------------------------------- */
-.video-bg {
+.wallpaper-bg {
   position: fixed;
   inset: 0;
   z-index: -2;
   overflow: hidden;
   pointer-events: none;
-  background: var(--color-canvas) center / cover no-repeat;
+  background: var(--color-canvas) url("/ascii-magic/wallpaper.png") center / cover no-repeat;
 }
-.video-bg-media {
+.wallpaper-bg-media {
   position: absolute;
   inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
   object-fit: cover;
 }
-/* scrim: keep foreground text readable over the moving image */
-.video-bg-scrim {
+.wallpaper-bg-vignette {
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(
-      to bottom,
-      rgba(10, 8, 16, 0.42),
-      rgba(10, 8, 16, 0.48) 45%,
-      rgba(10, 8, 16, 0.62)
-    ),
-    radial-gradient(120% 70% at 50% 0%, transparent, rgba(10, 8, 16, 0.4));
+    radial-gradient(95% 82% at 10% 100%, rgba(4, 13, 7, 0.78), transparent 62%),
+    linear-gradient(to top, rgba(4, 13, 7, 0.48), transparent 38%),
+    linear-gradient(to bottom, rgba(4, 13, 7, 0.28), transparent 35%),
+    radial-gradient(80% 90% at 100% 50%, rgba(4, 13, 7, 0.36), transparent 62%);
 }
-/* reduced-motion: drop the video, fall back to the static poster frame */
 @media (prefers-reduced-motion: reduce) {
-  .video-bg {
-    background-image: url("/dhizume/bg-desktop.jpg");
-  }
-  .video-bg-media {
+  .wallpaper-bg-media {
     display: none;
-  }
-}
-@media (prefers-reduced-motion: reduce) and (max-width: 639px) {
-  .video-bg {
-    background-image: url("/dhizume/bg-mobile.jpg");
   }
 }
 

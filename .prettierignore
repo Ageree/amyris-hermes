@@ -1,0 +1,16 @@
+node_modules
+.next
+.output
+dist
+build
+coverage
+test-results
+playwright-report
+*.tsbuildinfo
+.gitnexus
+.pytest_cache
+__pycache__
+.agents
+.claude
+docs/overnight
+web/cp-generated

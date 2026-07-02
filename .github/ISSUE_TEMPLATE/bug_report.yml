@@ -1,0 +1,48 @@
+name: Bug report
+description: Report a reproducible problem.
+title: "[Bug]: "
+labels: ["type:bug", "priority:P2"]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What is broken?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, URLs, payloads, or screenshots when useful.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - area:web
+        - area:control-plane
+        - area:agent
+        - area:fleet
+        - area:lab
+        - area:infra
+    validations:
+      required: true

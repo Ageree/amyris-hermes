@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a user-visible or operator-visible improvement.
+title: "[Feature]: "
+labels: ["type:feature", "priority:P3"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operator need does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the intended behavior and any constraints.
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - area:web
+        - area:control-plane
+        - area:agent
+        - area:fleet
+        - area:lab
+        - area:infra
+    validations:
+      required: true
+  - type: textarea
+    id: rollout
+    attributes:
+      label: Rollout and measurement
+      description: Mention feature flags, analytics, logs, or metrics needed to verify impact.

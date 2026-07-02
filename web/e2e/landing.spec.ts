@@ -1,65 +1,30 @@
 import { test, expect } from "@playwright/test";
 
-// Public marketing landing — no auth, no Convex writes. Asserts the three tier
-// labels, both channel words, and a working "sign in" affordance. All matchers
-// are case-insensitive to respect the lowercase voice without being brittle.
-
 test.describe("landing page", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
   });
 
-  test("shows the three tier labels in the pricing grid", async ({ page }) => {
-    // Scope to the pricing section so we match the tier CARDS, not incidental
-    // copy elsewhere on the page.
-    const pricing = page.locator("#pricing");
-    await expect(pricing).toBeVisible();
-
-    for (const label of ["free", "pro", "max"]) {
-      await expect(
-        pricing.getByText(new RegExp(`^${label}$`, "i")).first(),
-      ).toBeVisible();
-    }
+  test("shows the wallpaper-led Amyris hero", async ({ page }) => {
+    await expect(page.getByRole("heading", { name: /^Amyris$/ })).toBeVisible();
+    await expect(page.getByText(/ИИ который действительно полезен/i)).toBeVisible();
   });
 
-  test("mentions both channels (imessage + telegram)", async ({ page }) => {
-    // Both words appear in the hero and as per-tier channel badges. We only
-    // require them to be present somewhere on the public page.
-    await expect(page.getByText(/imessage/i).first()).toBeVisible();
-    await expect(page.getByText(/telegram/i).first()).toBeVisible();
+  test("primary CTA opens iMessage", async ({ page }) => {
+    const start = page.getByTestId("start-imessage");
+    await expect(start).toBeVisible();
+    await expect(start).toHaveText("Начать");
+    await expect(start).toHaveAttribute("href", /^imessage:\/\//);
   });
 
-  test("has a sign-in affordance linking to /signin", async ({ page }) => {
-    // The top nav is intentionally scroll-revealed (Nav.tsx hides it with
-    // -translate-y-full + pointer-events-none until scrollY > ~60vh, to keep the
-    // throne-video fold chrome-free). Reveal it first, then assert the header
-    // "sign in" link works. The first-fold sign-in path (hero "get started" CTA)
-    // is covered by the separate test below.
-    await page.evaluate(() => window.scrollTo(0, Math.ceil(window.innerHeight * 0.7)));
-
-    // Scope to the header so the (also valid) footer "sign in" link isn't ambiguous.
-    const signIn = page.locator("header").getByRole("link", { name: /^sign in$/i });
+  test("hero login links to phone registration", async ({ page }) => {
+    const signIn = page.getByRole("link", { name: /^Войти$/ }).first();
     await expect(signIn).toBeVisible();
     await expect(signIn).toHaveAttribute("href", /\/signin$/);
 
-    // And it actually navigates to the sign-in surface.
     await signIn.click();
     await expect(page).toHaveURL(/\/signin(\b|\/|\?|$)/);
     await expect(page.getByTestId("signin-card")).toBeVisible();
-  });
-
-  test("the primary 'get started' CTA begins agent creation at /signin", async ({ page }) => {
-    // The redesigned hero leads with a single "get started" button — the entry
-    // point to creating an assistant. It must reach the sign-in surface.
-    const getStarted = page
-      .locator("main")
-      .getByRole("link", { name: /^get started$/i })
-      .first();
-    await expect(getStarted).toBeVisible();
-    await expect(getStarted).toHaveAttribute("href", /\/signin$/);
-
-    await getStarted.click();
-    await expect(page).toHaveURL(/\/signin(\b|\/|\?|$)/);
-    await expect(page.getByTestId("signin-card")).toBeVisible();
+    await expect(page.getByTestId("phone-input")).toBeVisible();
   });
 });

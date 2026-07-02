@@ -1,0 +1,22 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "minimumReleaseAge": "7 days",
+  "dependencyDashboard": true,
+  "labels": ["type:chore", "area:infra"],
+  "packageRules": [
+    {
+      "matchManagers": ["npm", "pip_requirements"],
+      "groupName": "weekly dependency maintenance",
+      "schedule": ["before 5am on monday"]
+    },
+    {
+      "matchPackageNames": ["ai", "eve", "spectrum-ts", "zod"],
+      "rangeStrategy": "pin"
+    },
+    {
+      "matchPackageNames": ["@opentelemetry/**", "protobufjs"],
+      "rangeStrategy": "pin"
+    }
+  ]
+}

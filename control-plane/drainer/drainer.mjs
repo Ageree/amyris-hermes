@@ -16,6 +16,7 @@
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 
 const CONVEX = (process.env.CONVEX_URL || "").replace(/\/+$/, "");
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
@@ -38,9 +39,16 @@ const EVE_TIMEOUT_MS = Number(process.env.DRAINER_EVE_TIMEOUT_MS || 180000);
 const ORDERS_ENABLED = process.env.ORDERS_ENABLED !== "0"; // kill-switch
 // Unified engine: order.py --service {food|grocery|taxi}. (EDA_ORDER_PY kept as a
 // back-compat env name in case an old launchd plist still sets it.)
-const ORDER_PY = process.env.ORDER_PY || process.env.EDA_ORDER_PY || `${homedir()}/.eve-orders/order.py`;
-const ORDER_VENV = process.env.ORDER_VENV || process.env.EDA_ORDER_VENV || `${homedir()}/.eve-orders/.venv/bin/python`;
-const PW_BROWSERS = process.env.PLAYWRIGHT_BROWSERS_PATH || `${homedir()}/Library/Caches/ms-playwright`;
+const ORDER_PY =
+  process.env.ORDER_PY ||
+  process.env.EDA_ORDER_PY ||
+  `${homedir()}/.eve-orders/order.py`;
+const ORDER_VENV =
+  process.env.ORDER_VENV ||
+  process.env.EDA_ORDER_VENV ||
+  `${homedir()}/.eve-orders/.venv/bin/python`;
+const PW_BROWSERS =
+  process.env.PLAYWRIGHT_BROWSERS_PATH || `${homedir()}/Library/Caches/ms-playwright`;
 const DEFAULT_ADDRESS = process.env.DEFAULT_ORDER_ADDRESS || "Тверская 7";
 // When the operator's persistent logged-in Chrome is up, set ORDER_CDP_URL (e.g.
 // http://127.0.0.1:9333) → order.py attaches to it (payment-capable). Unset → fresh
@@ -53,7 +61,10 @@ const OR_MODEL = process.env.MINIMAX_MODEL || "minimax/minimax-m3";
 const ORDER_TIMEOUT_MS = Number(process.env.ORDER_TIMEOUT_MS || 420000); // 7 min cap
 
 const log = (...a) => console.log(new Date().toISOString(), ...a);
-const die = (m) => { console.error("FATAL:", m); process.exit(1); };
+const die = (m) => {
+  console.error("FATAL:", m);
+  process.exit(1);
+};
 // Env validation runs only when RUN as the loop (see the run-guard at the bottom), NOT
 // on import — so the pure-function self-checks can import this module without env set.
 
@@ -70,12 +81,18 @@ async function convex(kind, path, args) {
     const res = await fetch(`${CONVEX}/api/${kind}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ path, args: { workerSecret: WORKER_SECRET, ...args }, format: "json" }),
+      body: JSON.stringify({
+        path,
+        args: { workerSecret: WORKER_SECRET, ...args },
+        format: "json",
+      }),
       signal: ctrl.signal,
     });
     const data = await res.json().catch(() => null);
     if (!res.ok || data?.status === "error") {
-      throw new Error(data?.errorMessage ?? `convex ${kind} ${path} -> HTTP ${res.status}`);
+      throw new Error(
+        data?.errorMessage ?? `convex ${kind} ${path} -> HTTP ${res.status}`,
+      );
     }
     return data?.value ?? null;
   } finally {
@@ -102,10 +119,21 @@ const eveAuth = "Basic " + Buffer.from(`convex:${EVE_SECRET}`).toString("base64"
 
 function buildMessage(history, facts, text) {
   const blocks = [];
-  if (facts?.length) blocks.push("[что ты уже знаешь об этом человеке]", ...facts.map((f) => `- ${f}`), "[/память]", "");
+  if (facts?.length)
+    blocks.push(
+      "[что ты уже знаешь об этом человеке]",
+      ...facts.map((f) => `- ${f}`),
+      "[/память]",
+      "",
+    );
   if (history?.length) {
     const lines = history.flatMap((t) => [`пользователь: ${t.text}`, `ты: ${t.reply}`]);
-    blocks.push("[недавний контекст диалога с этим пользователем]", ...lines, "[/контекст]", "");
+    blocks.push(
+      "[недавний контекст диалога с этим пользователем]",
+      ...lines,
+      "[/контекст]",
+      "",
+    );
   }
   if (!blocks.length) return text;
   blocks.push("текущее сообщение пользователя:", text);
@@ -120,13 +148,105 @@ function buildMessage(history, facts, text) {
 // ponytail: single-host JSON file (the drainer IS single-host; the serial loop means no
 // concurrent writes). Ceiling = not shared with the web/fleet; upgrade = a Convex `facts`
 // table once the schema is reconciled and deployable.
-const FACTS_FILE = process.env.DRAINER_FACTS_FILE || `${homedir()}/.eve-drainer/facts.json`;
+const FACTS_FILE =
+  process.env.DRAINER_FACTS_FILE || `${homedir()}/.eve-drainer/facts.json`;
 const FACTS_PER_USER = Number(process.env.DRAINER_FACTS_PER_USER || 50);
 const RE_REMEMBER = /\[\[remember:([^\]\n]+?)\]\]/gi;
+const SM_KEY = process.env.SUPERMEMORY_API_KEY || "";
+const SM_BASE = (
+  process.env.SUPERMEMORY_BASE_URL || "https://api.supermemory.ai"
+).replace(/\/+$/, "");
+const SM_ENABLED = process.env.SUPERMEMORY_ENABLED !== "0";
+const SM_WRITE_ENABLED = process.env.SUPERMEMORY_WRITE_ENABLED !== "0";
+const SM_LIMIT = Number(process.env.SUPERMEMORY_SEARCH_LIMIT || 8);
+
+const smTag = (key) =>
+  `hermes:user:${String(key || "unknown")
+    .replace(/[^a-zA-Z0-9_.:-]+/g, "-")
+    .slice(0, 96)}`;
+
+async function smPost(path, body) {
+  if (!(SM_ENABLED && SM_KEY)) throw new Error("SUPERMEMORY_API_KEY not set");
+  const r = await tfetch(`${SM_BASE}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${SM_KEY}` },
+    body: JSON.stringify(body),
+  });
+  const data = await r.json().catch(() => null);
+  if (!r.ok) throw new Error(`supermemory ${path} HTTP ${r.status}`);
+  return data;
+}
+
+function smItems(data) {
+  if (Array.isArray(data)) return data;
+  if (!data || typeof data !== "object") return [];
+  for (const k of ["results", "memories", "documents", "items", "data"]) {
+    if (Array.isArray(data[k])) return data[k];
+  }
+  return [];
+}
+
+function smText(item) {
+  if (typeof item === "string") return item;
+  if (!item || typeof item !== "object") return "";
+  for (const k of ["memory", "content", "chunk", "text", "summary", "title"]) {
+    if (typeof item[k] === "string" && item[k].trim()) return item[k].trim();
+  }
+  return (
+    smText(item.document) ||
+    (typeof item.memory === "object" ? smText(item.memory) : "")
+  );
+}
+
+async function recallFacts(key, query) {
+  const local = factsFor(key);
+  if (!(SM_ENABLED && SM_KEY && key)) return local;
+  const body = {
+    q: query || "user profile preferences facts",
+    limit: SM_LIMIT,
+    containerTag: smTag(key),
+    searchMode: "hybrid",
+  };
+  for (const path of ["/v4/search", "/v3/search"]) {
+    try {
+      const remote = smItems(await smPost(path, body))
+        .map(smText)
+        .filter(Boolean)
+        .slice(0, SM_LIMIT);
+      return [...new Set([...remote, ...local])].slice(0, SM_LIMIT);
+    } catch (e) {
+      log(`supermemory recall via ${path} failed: ${e.message}`);
+    }
+  }
+  return local;
+}
+
+async function rememberRemote(key, content, kind) {
+  const text = (content || "").trim();
+  if (!(SM_ENABLED && SM_WRITE_ENABLED && SM_KEY && key && text)) return false;
+  const metadata = { kind };
+  const tag = smTag(key);
+  const customId = `${kind}:${key}:${createHash("sha256").update(text).digest("hex").slice(0, 32)}`;
+  for (const [path, body] of [
+    ["/v4/memories", { memories: [{ content: text, metadata }], containerTag: tag }],
+    ["/v3/documents", { content: text, containerTag: tag, metadata, customId }],
+  ]) {
+    try {
+      await smPost(path, body);
+      return true;
+    } catch (e) {
+      log(`supermemory write via ${path} failed: ${e.message}`);
+    }
+  }
+  return false;
+}
 
 function loadFacts() {
-  try { return existsSync(FACTS_FILE) ? JSON.parse(readFileSync(FACTS_FILE, "utf8")) : {}; }
-  catch { return {}; }
+  try {
+    return existsSync(FACTS_FILE) ? JSON.parse(readFileSync(FACTS_FILE, "utf8")) : {};
+  } catch {
+    return {};
+  }
 }
 function factsFor(key) {
   if (!key) return [];
@@ -140,15 +260,25 @@ function addFact(key, fact) {
   if (list.some((x) => x.fact === f)) return; // exact dedup
   list.push({ fact: f, at: Date.now() });
   db[key] = list.slice(-FACTS_PER_USER); // keep newest N
-  try { writeFileSync(FACTS_FILE, JSON.stringify(db)); } catch (e) { log(`facts write failed: ${e.message}`); }
+  try {
+    writeFileSync(FACTS_FILE, JSON.stringify(db));
+  } catch (e) {
+    log(`facts write failed: ${e.message}`);
+  }
 }
 // Pull `[[remember:…]]` markers out of the reply (so the user never sees them) and
 // return the cleaned text + the harvested facts.
 function extractMemories(reply) {
   const memories = [];
   const cleaned = (reply || "")
-    .replace(RE_REMEMBER, (_, f) => { const t = f.trim(); if (t) memories.push(t); return ""; })
-    .replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+    .replace(RE_REMEMBER, (_, f) => {
+      const t = f.trim();
+      if (t) memories.push(t);
+      return "";
+    })
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
   return { cleaned, memories };
 }
 
@@ -159,15 +289,21 @@ function extractMemories(reply) {
 function foldEvent(state, ev) {
   if (ev?.type === "message.completed") {
     const m = ev.data?.message;
-    if (m) { state.any = m; if (ev.data?.finishReason !== "tool-calls") state.stop = m; }
+    if (m) {
+      state.any = m;
+      if (ev.data?.finishReason !== "tool-calls") state.stop = m;
+    }
   }
   return state;
 }
-function selectReply(state) { return state.stop || state.any || ""; }
+function selectReply(state) {
+  return state.stop || state.any || "";
+}
 
 async function readEveReply(sessionId, signal) {
   const res = await fetch(`${EVE_URL}/eve/v1/session/${sessionId}/stream`, {
-    headers: { authorization: eveAuth, accept: "application/x-ndjson" }, signal,
+    headers: { authorization: eveAuth, accept: "application/x-ndjson" },
+    signal,
   });
   if (!res.ok || !res.body) throw new Error(`eve stream HTTP ${res.status}`);
   const reader = res.body.getReader();
@@ -177,7 +313,12 @@ async function readEveReply(sessionId, signal) {
   const consume = (line) => {
     line = line.trim();
     if (!line) return false;
-    let ev; try { ev = JSON.parse(line); } catch { return false; }
+    let ev;
+    try {
+      ev = JSON.parse(line);
+    } catch {
+      return false;
+    }
     foldEvent(state, ev);
     return ev.type === "session.waiting" && selectReply(state) !== "";
   };
@@ -187,8 +328,12 @@ async function readEveReply(sessionId, signal) {
     buf += dec.decode(value, { stream: true });
     let nl;
     while ((nl = buf.indexOf("\n")) >= 0) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-      if (consume(line)) { await reader.cancel().catch(() => {}); return selectReply(state); }
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
+      if (consume(line)) {
+        await reader.cancel().catch(() => {});
+        return selectReply(state);
+      }
     }
   }
   if (buf) consume(buf);
@@ -221,7 +366,9 @@ async function callEve(history, facts, text) {
     } catch (e) {
       lastErr = e;
       if (attempt === 0) log(`eve call failed (${e.message}) — retrying once`);
-    } finally { clearTimeout(t); }
+    } finally {
+      clearTimeout(t);
+    }
   }
   throw lastErr ?? new Error("eve: no answer after retry");
 }
@@ -259,11 +406,14 @@ function splitImages(text) {
   const reBare = /https?:\/\/\S+?\.(?:png|jpe?g|gif|webp)(?:\?\S*)?/gi;
   for (;;) {
     reImg.lastIndex = reLink.lastIndex = reBare.lastIndex = pos;
-    const cands = [reImg.exec(text), reLink.exec(text), reBare.exec(text)].filter(Boolean);
+    const cands = [reImg.exec(text), reLink.exec(text), reBare.exec(text)].filter(
+      Boolean,
+    );
     if (!cands.length) break;
     const m = cands.reduce((a, b) => (b.index < a.index ? b : a)); // earliest; md wins ties
     if (m.index > pos) out.push({ t: "text", text: text.slice(pos, m.index) });
-    if (m[0][0] === "[") out.push({ t: "text", text: m[0] }); // md link → opaque text
+    if (m[0][0] === "[")
+      out.push({ t: "text", text: m[0] }); // md link → opaque text
     else out.push({ t: "image", src: m[0][0] === "!" ? m[1] : m[0] });
     pos = m.index + m[0].length;
   }
@@ -272,7 +422,10 @@ function splitImages(text) {
 }
 
 function parsePoll(block) {
-  const lines = block.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = block
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
   if (lines.length < 2) return null; // need a question + at least one option
   const [question, ...options] = lines;
   return { t: "poll", question, options };
@@ -289,7 +442,10 @@ function mergeText(parts) {
   };
   for (const p of parts) {
     if (p.t === "text") buf.push(p.text);
-    else { flush(); out.push(p); }
+    else {
+      flush();
+      out.push(p);
+    }
   }
   flush();
   return out;
@@ -299,7 +455,8 @@ function parseRich(reply) {
   if (reply == null) return [];
   const [reactions, body] = stripLeadingReactions(reply);
   const parts = [...reactions];
-  let pos = 0, m;
+  let pos = 0,
+    m;
   RE_POLL.lastIndex = 0;
   while ((m = RE_POLL.exec(body))) {
     const before = body.slice(pos, m.index);
@@ -311,7 +468,8 @@ function parseRich(reply) {
   const tail = body.slice(pos);
   if (tail) parts.push(...splitImages(tail));
   const merged = mergeText(parts);
-  if (!merged.length && (reply || "").trim()) return [{ t: "text", text: reply.trim() }];
+  if (!merged.length && (reply || "").trim())
+    return [{ t: "text", text: reply.trim() }];
   return merged;
 }
 
@@ -319,12 +477,36 @@ function parseRich(reply) {
 // emoji onto the closest one; an unmappable emoji is SKIPPED (never a wrong sentiment).
 const TAPBACKS = new Set(["love", "like", "dislike", "laugh", "emphasize", "question"]);
 const EMOJI_TO_TAPBACK = {
-  "❤️": "love", "❤": "love", "🩷": "love", "😍": "love", "🥰": "love", "💕": "love", "💖": "love", "💗": "love", "♥️": "love",
-  "👍": "like", "🙂": "like", "✅": "like", "👌": "like",
+  "❤️": "love",
+  "❤": "love",
+  "🩷": "love",
+  "😍": "love",
+  "🥰": "love",
+  "💕": "love",
+  "💖": "love",
+  "💗": "love",
+  "♥️": "love",
+  "👍": "like",
+  "🙂": "like",
+  "✅": "like",
+  "👌": "like",
   "👎": "dislike",
-  "😂": "laugh", "🤣": "laugh", "😆": "laugh", "😅": "laugh", "😄": "laugh", "😹": "laugh",
-  "‼️": "emphasize", "❗": "emphasize", "❗️": "emphasize", "🔥": "emphasize", "💯": "emphasize", "⚡": "emphasize", "🙌": "emphasize",
-  "❓": "question", "❔": "question", "🤔": "question",
+  "😂": "laugh",
+  "🤣": "laugh",
+  "😆": "laugh",
+  "😅": "laugh",
+  "😄": "laugh",
+  "😹": "laugh",
+  "‼️": "emphasize",
+  "❗": "emphasize",
+  "❗️": "emphasize",
+  "🔥": "emphasize",
+  "💯": "emphasize",
+  "⚡": "emphasize",
+  "🙌": "emphasize",
+  "❓": "question",
+  "❔": "question",
+  "🤔": "question",
 };
 function emojiToTapback(emoji) {
   const e = (emoji || "").trim();
@@ -333,7 +515,8 @@ function emojiToTapback(emoji) {
 }
 
 const isRemote = (s) => typeof s === "string" && /^https?:\/\//.test(s);
-const pollToText = (p) => [p.question, ...p.options.map((o, i) => `${i + 1}. ${o}`)].join("\n");
+const pollToText = (p) =>
+  [p.question, ...p.options.map((o, i) => `${i + 1}. ${o}`)].join("\n");
 
 // ---- Channel send -----------------------------------------------------------------
 // content XOR mediaUrl: a media send carries `media_url` (real iMessage attachment),
@@ -341,13 +524,19 @@ const pollToText = (p) => [p.question, ...p.options.map((o, i) => `${i + 1}. ${o
 async function sendImessage(toNumber, content, mediaUrl) {
   if (!SB_ID || !SB_SECRET || !SB_FROM) throw new Error("SENDBLUE_* not configured");
   const body = { number: toNumber, from_number: SB_FROM };
-  if (mediaUrl) body.media_url = mediaUrl; else body.content = content;
+  if (mediaUrl) body.media_url = mediaUrl;
+  else body.content = content;
   const r = await tfetch("https://api.sendblue.co/api/send-message", {
     method: "POST",
-    headers: { "content-type": "application/json", "sb-api-key-id": SB_ID, "sb-api-secret-key": SB_SECRET },
+    headers: {
+      "content-type": "application/json",
+      "sb-api-key-id": SB_ID,
+      "sb-api-secret-key": SB_SECRET,
+    },
     body: JSON.stringify(body),
   });
-  if (!r.ok) throw new Error(`sendblue HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
+  if (!r.ok)
+    throw new Error(`sendblue HTTP ${r.status}: ${(await r.text()).slice(0, 200)}`);
   return true;
 }
 
@@ -356,28 +545,57 @@ async function sendReaction(messageHandle, tapback) {
   if (!SB_ID || !SB_SECRET || !SB_FROM) return false;
   const r = await tfetch("https://api.sendblue.co/api/send-reaction", {
     method: "POST",
-    headers: { "content-type": "application/json", "sb-api-key-id": SB_ID, "sb-api-secret-key": SB_SECRET },
-    body: JSON.stringify({ from_number: SB_FROM, message_handle: messageHandle, reaction: tapback }),
+    headers: {
+      "content-type": "application/json",
+      "sb-api-key-id": SB_ID,
+      "sb-api-secret-key": SB_SECRET,
+    },
+    body: JSON.stringify({
+      from_number: SB_FROM,
+      message_handle: messageHandle,
+      reaction: tapback,
+    }),
   });
   return r.ok;
 }
 
 async function sendTelegram(chatId, text) {
   const api = `https://api.telegram.org/bot${TG_TOKEN}`;
-  const post = async (m, p) => (await tfetch(`${api}/${m}`, {
-    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(p),
-  })).ok;
-  try { if (await post("sendRichMessage", { chat_id: chatId, rich_message: { markdown: text } })) return true; } catch {}
-  if (!await post("sendMessage", { chat_id: chatId, text })) throw new Error("telegram send failed");
+  const post = async (m, p) =>
+    (
+      await tfetch(`${api}/${m}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(p),
+      })
+    ).ok;
+  try {
+    if (
+      await post("sendRichMessage", {
+        chat_id: chatId,
+        rich_message: { markdown: text },
+      })
+    )
+      return true;
+  } catch {}
+  if (!(await post("sendMessage", { chat_id: chatId, text })))
+    throw new Error("telegram send failed");
   return true;
 }
 
 async function sendTelegramPhoto(chatId, photoUrl, caption) {
   const api = `https://api.telegram.org/bot${TG_TOKEN}`;
-  return (await tfetch(`${api}/sendPhoto`, {
-    method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, photo: photoUrl, caption: caption || undefined }),
-  })).ok;
+  return (
+    await tfetch(`${api}/sendPhoto`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        chat_id: chatId,
+        photo: photoUrl,
+        caption: caption || undefined,
+      }),
+    })
+  ).ok;
 }
 
 // One plain text bubble over the row's own channel (the pre-rich behavior — throws so
@@ -398,7 +616,8 @@ async function sendReply(row, text) {
   const isImessage = row.channel !== "telegram";
   // A reaction targets the inbound's RAW Sendblue handle — only valid on iMessage rows
   // whose handle is unprefixed (telegram=`tg:…`, photon test rows=`photon:…`).
-  const reactTarget = isImessage && row.handle && !/^(tg|photon):/.test(row.handle) ? row.handle : null;
+  const reactTarget =
+    isImessage && row.handle && !/^(tg|photon):/.test(row.handle) ? row.handle : null;
   for (const p of parts) {
     try {
       if (p.t === "react") {
@@ -406,19 +625,30 @@ async function sendReply(row, text) {
         if (reactTarget && tb) await sendReaction(reactTarget, tb);
         continue; // telegram / unmappable / no-target → skip (never a wrong tapback)
       }
-      if (p.t === "poll") { await sendText(row, pollToText(p)); continue; }
+      if (p.t === "poll") {
+        await sendText(row, pollToText(p));
+        continue;
+      }
       if (p.t === "image") {
-        if (!isRemote(p.src)) { await sendText(row, p.src); continue; } // refuse non-remote
+        if (!isRemote(p.src)) {
+          await sendText(row, p.src);
+          continue;
+        } // refuse non-remote
         if (isImessage) {
-          try { await sendImessage(row.replyTarget, null, p.src); }
-          catch { await sendImessage(row.replyTarget, p.src); } // fallback: URL auto-unfurls
+          try {
+            await sendImessage(row.replyTarget, null, p.src);
+          } catch {
+            await sendImessage(row.replyTarget, p.src);
+          } // fallback: URL auto-unfurls
         } else if (!(await sendTelegramPhoto(row.replyTarget, p.src, ""))) {
           await sendTelegram(row.replyTarget, p.src);
         }
         continue;
       }
       await sendText(row, p.text);
-    } catch (e) { log(`sendReply part(${p.t}) failed id=${row.id}: ${e.message}`); }
+    } catch (e) {
+      log(`sendReply part(${p.t}) failed id=${row.id}: ${e.message}`);
+    }
   }
 }
 
@@ -427,7 +657,8 @@ async function sendReply(row, text) {
 // NB: NO \b anchor — JS \b is defined via \w (ASCII-only, even under the u flag), so a
 // \b before a Cyrillic letter never matches and would zero out EVERY Russian order phrase.
 // Plain substring alternation is exactly right for a bias-to-recall prefilter anyway.
-const ORDER_HINT = /(закаж|заказ|оформи|доставк|купи|купить|привез|принеси|поесть|пиццу|пицц|суши|роллы|бургер|шаурм|воды|продукт|лавк|вкусвилл|самокат|такси|убер|еда|еды|еду)/i;
+const ORDER_HINT =
+  /(закаж|заказ|оформи|доставк|купи|купить|привез|принеси|поесть|пиццу|пицц|суши|роллы|бургер|шаурм|воды|продукт|лавк|вкусвилл|самокат|такси|убер|еда|еды|еду)/i;
 
 // ---- Order intent: cheap M3 classify (reasoning OFF) ------------------------------
 // Returns {is_order, service, address, item, from, to}. food/grocery use address+item;
@@ -446,10 +677,16 @@ async function classifyOrder(text) {
   try {
     const r = await tfetch(`${OR_BASE}/chat/completions`, {
       method: "POST",
-      headers: { "content-type": "application/json", authorization: `Bearer ${OR_KEY}` },
+      headers: {
+        "content-type": "application/json",
+        authorization: `Bearer ${OR_KEY}`,
+      },
       body: JSON.stringify({
         model: OR_MODEL,
-        messages: [{ role: "system", content: sys }, { role: "user", content: text }],
+        messages: [
+          { role: "system", content: sys },
+          { role: "user", content: text },
+        ],
         temperature: 0,
         max_tokens: 160,
         response_format: { type: "json_object" },
@@ -460,8 +697,17 @@ async function classifyOrder(text) {
     const j = await r.json();
     const content = j?.choices?.[0]?.message?.content || "{}";
     const out = JSON.parse(content.replace(/```json|```/g, "").trim());
-    const service = ["food", "grocery", "taxi"].includes(out.service) ? out.service : null;
-    return { is_order: !!out.is_order, service, address: out.address, item: out.item, from: out.from, to: out.to };
+    const service = ["food", "grocery", "taxi"].includes(out.service)
+      ? out.service
+      : null;
+    return {
+      is_order: !!out.is_order,
+      service,
+      address: out.address,
+      item: out.item,
+      from: out.from,
+      to: out.to,
+    };
   } catch (e) {
     log("classifyOrder error:", e.message);
     return { is_order: false };
@@ -480,14 +726,24 @@ function runOrder(service, params) {
     const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: PW_BROWSERS };
     if (ORDER_CDP_URL) env.ORDER_CDP_URL = ORDER_CDP_URL;
     const child = spawn(ORDER_VENV, args, { env });
-    let out = "", err = "";
-    const t = setTimeout(() => { child.kill("SIGKILL"); }, ORDER_TIMEOUT_MS);
+    let out = "",
+      err = "";
+    const t = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, ORDER_TIMEOUT_MS);
     child.stdout.on("data", (d) => (out += d));
     child.stderr.on("data", (d) => (err += d));
     child.on("close", (code) => {
       clearTimeout(t);
-      try { return resolve(JSON.parse(out.trim())); }
-      catch { return resolve({ ok: false, status: "error", error: `exit ${code}: ${err.slice(-200)}` }); }
+      try {
+        return resolve(JSON.parse(out.trim()));
+      } catch {
+        return resolve({
+          ok: false,
+          status: "error",
+          error: `exit ${code}: ${err.slice(-200)}`,
+        });
+      }
     });
   });
 }
@@ -495,9 +751,11 @@ function runOrder(service, params) {
 // A blocking signal from order.py (`needs`) → a friendly instruction. NEVER leaks the
 // live-view handoff token (that URL is minted by the onboarding step, human-gated).
 const NEEDS_MSG = {
-  NEED_LOGIN: "нужно один раз войти в Яндекс и привязать карту в твоём браузере — пришлю ссылку для входа, и дальше всё соберу сам.",
+  NEED_LOGIN:
+    "нужно один раз войти в Яндекс и привязать карту в твоём браузере — пришлю ссылку для входа, и дальше всё соберу сам.",
   NEED_CARD: "не вижу привязанной карты в Яндексе — добавь карту, и я закончу заказ.",
-  NEED_3DS: "банк просит подтверждение (3-D Secure) — подтверди в приложении банка и скажи «повтори».",
+  NEED_3DS:
+    "банк просит подтверждение (3-D Secure) — подтверди в приложении банка и скажи «повтори».",
   WEB_NO_ORDER: "через сайт оформить не вышло — попробую иначе или подскажи детали.",
 };
 
@@ -506,9 +764,10 @@ const NEEDS_MSG = {
 // becomes a friendly instruction; any other failure stays honest.
 function formatOrderReply(res, service = "food") {
   if (res.ok && res.final_result) {
-    const tail = service === "taxi"
-      ? "\n\nне вызывал — скажи «вызывай», когда готов (оплата привязанной картой)."
-      : "\n\nоплату не трогал — скажи «оплати», когда будешь готов.";
+    const tail =
+      service === "taxi"
+        ? "\n\nне вызывал — скажи «вызывай», когда готов (оплата привязанной картой)."
+        : "\n\nоплату не трогал — скажи «оплати», когда будешь готов.";
     return `${res.final_result}${tail}`;
   }
   if (res.needs && NEEDS_MSG[res.needs]) return NEEDS_MSG[res.needs];
@@ -519,12 +778,21 @@ function formatOrderReply(res, service = "food") {
 // Pure routing (unit-tested): map an order to the engine's per-service params/ack, or a
 // clarifying ask when taxi lacks endpoints. `addr` lets the test pin the default.
 function buildOrderArgs(order, addr = DEFAULT_ADDRESS) {
-  const service = ["food", "grocery", "taxi"].includes(order.service) ? order.service : "food";
+  const service = ["food", "grocery", "taxi"].includes(order.service)
+    ? order.service
+    : "food";
   if (service === "taxi") {
     if (!order.from || !order.to) {
-      return { service, ask: "куда и откуда едем? напиши «откуда → куда», и я посмотрю цену." };
+      return {
+        service,
+        ask: "куда и откуда едем? напиши «откуда → куда», и я посмотрю цену.",
+      };
     }
-    return { service, params: { from: order.from, to: order.to }, ack: `смотрю такси: ${order.from} → ${order.to}. пара минут…` };
+    return {
+      service,
+      params: { from: order.from, to: order.to },
+      ack: `смотрю такси: ${order.from} → ${order.to}. пара минут…`,
+    };
   }
   const address = order.address || addr;
   const item = order.item || "что-нибудь популярное";
@@ -540,12 +808,18 @@ async function handleOrder(row, order) {
     return log(`order id=${row.id} taxi missing from/to — asked`);
   }
   await sendReply(row, ack);
-  log(`order id=${row.id} service=${service} ${JSON.stringify(params)} cdp=${ORDER_CDP_URL ? "on" : "off"} — running engine`);
+  log(
+    `order id=${row.id} service=${service} ${JSON.stringify(params)} cdp=${ORDER_CDP_URL ? "on" : "off"} — running engine`,
+  );
   // ponytail: blocks the loop ~2-4min/attempt (1 global lock). Upgrade: separate
   // order-worker/queue at >1 concurrent user. Retry once — the address picker is flaky.
   let res = await runOrder(service, params);
-  if (!res.ok) { log(`order id=${row.id} attempt1 not ok (${res.status}) — retry`); res = await runOrder(service, params); }
-  if (!(res.ok && res.final_result)) log(`order id=${row.id} FAILED:`, JSON.stringify(res).slice(0, 200));
+  if (!res.ok) {
+    log(`order id=${row.id} attempt1 not ok (${res.status}) — retry`);
+    res = await runOrder(service, params);
+  }
+  if (!(res.ok && res.final_result))
+    log(`order id=${row.id} FAILED:`, JSON.stringify(res).slice(0, 200));
   const reply = formatOrderReply(res, service);
   await sendReply(row, reply);
   await convex("mutation", "messages:complete", { id: row.id, reply });
@@ -563,13 +837,23 @@ async function processRow(row) {
     userNumber: row.userId ? undefined : row.userNumber,
     limit: 10,
   });
-  const facts = factsFor(userKey);
+  const facts = await recallFacts(userKey, row.text);
   const raw = await callEve(history || [], facts, row.text);
   const { cleaned, memories } = extractMemories(raw); // harvest [[remember:…]] markers
-  for (const f of memories) addFact(userKey, f);
+  for (const f of memories) {
+    addFact(userKey, f);
+    await rememberRemote(userKey, f, "explicit_fact");
+  }
   await sendReply(row, cleaned);
   await convex("mutation", "messages:complete", { id: row.id, reply: cleaned });
-  log(`done id=${row.id} ch=${row.channel || "imessage"} facts=${facts.length}+${memories.length} -> "${cleaned.slice(0, 60)}"`);
+  await rememberRemote(
+    userKey,
+    `User: ${row.text}\nAssistant: ${cleaned}`,
+    "conversation_turn",
+  );
+  log(
+    `done id=${row.id} ch=${row.channel || "imessage"} facts=${facts.length}+${memories.length} -> "${cleaned.slice(0, 60)}"`,
+  );
 }
 
 // Pure (unit-tested): pick the claim mutation by mode. USER_ID set → scoped per-user
@@ -586,18 +870,37 @@ function claimSpec(env = process.env) {
 
 async function main() {
   const claim = claimSpec();
-  log(`eve-drainer up. convex=${CONVEX} eve=${EVE_URL} claim=${claim.path}${USER_ID ? ` user=${USER_ID}` : ""}`);
+  log(
+    `eve-drainer up. convex=${CONVEX} eve=${EVE_URL} claim=${claim.path}${USER_ID ? ` user=${USER_ID}` : ""}`,
+  );
   for (;;) {
     let row = null;
-    try { row = await convex("mutation", claim.path, claim.args); }
-    catch (e) { log("claim error:", e.message); await sleep(IDLE_MS * 2); continue; }
-    if (!row) { await sleep(IDLE_MS); continue; }
-    log(`claimed id=${row.id} ch=${row.channel || "imessage"} from=${row.userNumber} text="${(row.text || "").slice(0, 60)}"`);
-    try { await processRow(row); }
-    catch (e) {
+    try {
+      row = await convex("mutation", claim.path, claim.args);
+    } catch (e) {
+      log("claim error:", e.message);
+      await sleep(IDLE_MS * 2);
+      continue;
+    }
+    if (!row) {
+      await sleep(IDLE_MS);
+      continue;
+    }
+    log(
+      `claimed id=${row.id} ch=${row.channel || "imessage"} from=${row.userNumber} text="${(row.text || "").slice(0, 60)}"`,
+    );
+    try {
+      await processRow(row);
+    } catch (e) {
       log(`FAIL id=${row.id}:`, e.message);
-      try { await convex("mutation", "messages:fail", { id: row.id, error: String(e.message).slice(0, 300) }); }
-      catch (e2) { log("fail() error:", e2.message); }
+      try {
+        await convex("mutation", "messages:fail", {
+          id: row.id,
+          error: String(e.message).slice(0, 300),
+        });
+      } catch (e2) {
+        log("fail() error:", e2.message);
+      }
     }
   }
 }
@@ -611,5 +914,18 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   main().catch((e) => die(e.message));
 }
 
-export { ORDER_HINT, formatOrderReply, classifyOrder, buildOrderArgs, parseRich, emojiToTapback,
-  buildMessage, extractMemories, factsFor, addFact, foldEvent, selectReply, claimSpec };
+export {
+  ORDER_HINT,
+  formatOrderReply,
+  classifyOrder,
+  buildOrderArgs,
+  parseRich,
+  emojiToTapback,
+  buildMessage,
+  extractMemories,
+  factsFor,
+  addFact,
+  foldEvent,
+  selectReply,
+  claimSpec,
+};

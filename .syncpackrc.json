@@ -1,0 +1,38 @@
+{
+  "semverGroups": [
+    {
+      "label": "React packages stay aligned",
+      "packages": ["react", "react-dom", "@types/react", "@types/react-dom"],
+      "range": "^"
+    },
+    {
+      "label": "Convex auth stack stays aligned",
+      "packages": ["convex", "@convex-dev/auth", "@auth/core"],
+      "range": "^"
+    },
+    {
+      "label": "TypeScript compiler versions are explicit per app",
+      "packages": ["typescript"],
+      "range": ""
+    }
+  ],
+  "versionGroups": [
+    {
+      "label": "Pinned agent runtime SDKs",
+      "packages": ["ai", "@vercel/connect", "eve", "zod"],
+      "pinVersion": true
+    },
+    {
+      "label": "Pinned Photon SDK and vulnerable transitive overrides",
+      "packages": [
+        "spectrum-ts",
+        "protobufjs",
+        "@opentelemetry/otlp-transformer",
+        "@opentelemetry/otlp-exporter-base",
+        "@opentelemetry/exporter-trace-otlp-http",
+        "@opentelemetry/exporter-logs-otlp-http"
+      ],
+      "pinVersion": true
+    }
+  ]
+}

@@ -14,6 +14,7 @@ export const currentUser = query({
     v.object({
       _id: v.id("users"),
       email: v.union(v.string(), v.null()),
+      phone: v.union(v.string(), v.null()),
       displayName: v.union(v.string(), v.null()),
       name: v.union(v.string(), v.null()),
       image: v.union(v.string(), v.null()),
@@ -29,6 +30,7 @@ export const currentUser = query({
     return {
       _id: u._id,
       email: u.email ?? null,
+      phone: u.phone ?? null,
       displayName: u.displayName ?? null,
       name: u.name ?? null,
       image: u.image ?? null,

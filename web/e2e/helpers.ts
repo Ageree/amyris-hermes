@@ -40,7 +40,13 @@ export async function signUpViaPassword(
   const card = page.getByTestId("signin-card");
   await expect(card).toBeVisible();
 
-  // The card starts in "sign in" flow. Flip to "sign up" via the explicit tab.
+  // The public card is phone-first. E2E keeps using the email/password fallback
+  // because it is deterministic and does not require a live iMessage/SMS code.
+  const emailFallback = card.getByTestId("email-fallback");
+  await expect(emailFallback).toBeVisible();
+  await emailFallback.click();
+
+  // The fallback starts in "sign in" flow. Flip to "sign up" via the explicit tab.
   const toSignUp = card.getByTestId("tab-signup");
   await expect(toSignUp).toBeVisible();
   await toSignUp.click();

@@ -1,0 +1,9 @@
+# Default owner for all agent-authored changes.
+* @Ageree
+
+web/ @Ageree
+control-plane/ @Ageree
+agent/ @Ageree
+fleet/ @Ageree
+lab/ @Ageree
+.github/ @Ageree

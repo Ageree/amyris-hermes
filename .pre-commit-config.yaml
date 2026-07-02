@@ -1,0 +1,71 @@
+minimum_pre_commit_version: "3.7.0"
+default_install_hook_types:
+  - pre-commit
+  - pre-push
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-json
+      - id: check-yaml
+      - id: check-added-large-files
+        args: ["--maxkb=512"]
+      - id: detect-private-key
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.2
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+        files: "^(fleet/controller|fleet/local|lab/skeleton|lab/tests)/.*\\.py$"
+      - id: ruff-format
+        files: "^(fleet/controller|fleet/local|lab/skeleton|lab/tests)/.*\\.py$"
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        files: "^(fleet/controller|fleet/local|lab/skeleton|lab/tests)/.*\\.py$"
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.16.1
+    hooks:
+      - id: mypy
+        args: ["--config-file=pyproject.toml"]
+        additional_dependencies:
+          - types-PyYAML
+          - types-requests
+        files: "^(fleet/controller|lab/skeleton)/.*\\.py$"
+  - repo: local
+    hooks:
+      - id: eslint
+        name: eslint
+        entry: eslint
+        language: node
+        additional_dependencies:
+          - "@eslint/js@9.30.1"
+          - "eslint@9.30.1"
+          - "eslint-plugin-unused-imports@4.1.4"
+          - "typescript-eslint@8.35.1"
+        files: "\\.(ts|tsx|js|mjs)$"
+      - id: prettier
+        name: prettier
+        entry: prettier --check
+        language: node
+        additional_dependencies:
+          - "prettier@3.6.2"
+        files: "\\.(json|md|mjs|ts|tsx|yaml|yml)$"
+      - id: readiness-large-files
+        name: readiness large-file budget
+        entry: node scripts/check-large-files.mjs
+        language: system
+        pass_filenames: false
+      - id: readiness-todos
+        name: readiness tracked TODOs
+        entry: node scripts/check-todos.mjs
+        language: system
+        pass_filenames: false
+      - id: readiness-agents-docs
+        name: AGENTS.md freshness checks
+        entry: node scripts/check-agents-docs.mjs
+        language: system
+        pass_filenames: false

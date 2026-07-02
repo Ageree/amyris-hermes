@@ -6,4 +6,9 @@ const nextConfig = {
   // tracing or Vercel "include files outside the Root Directory" toggle needed.
 };
 
-export default nextConfig;
+const withBundleAnalyzer =
+  process.env.ANALYZE === "true"
+    ? (await import("@next/bundle-analyzer")).default({ enabled: true })
+    : (config) => config;
+
+export default withBundleAnalyzer(nextConfig);

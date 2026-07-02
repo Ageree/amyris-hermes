@@ -7,6 +7,8 @@
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs",
+    "typecheck": "node --check index.mjs && node --check patch-spectrum-mixed-attachments.mjs",
+    "test": "node --test tests/*.test.mjs && npm run typecheck",
     "postinstall": "node patch-spectrum-mixed-attachments.mjs"
   },
   "engines": {

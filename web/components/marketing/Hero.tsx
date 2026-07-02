@@ -1,51 +1,44 @@
 import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { IMESSAGE_NUMBER } from "@/lib/deeplinks";
+import { HoverButton } from "@/components/ui/hover-button";
 
-// The fold: dhizume on her moonlit throne fills the screen (VideoBackground sits
-// fixed behind everything). The editorial hero block sits low-left so it never
-// covers her face in the video; a left/bottom scrim keeps the copy readable.
-// Display headline in Cormorant (the romantic serif), italic emphasis in the
-// same family. Four text elements max, CTA visible without scroll, no scroll cue.
+const START_MESSAGE = "start";
+
+const startHref = IMESSAGE_NUMBER
+  ? `imessage://${encodeURIComponent(IMESSAGE_NUMBER)}?body=${encodeURIComponent(START_MESSAGE)}`
+  : "imessage://";
+
+// The fold: the ASCII meadow wallpaper is the product signal. Copy stays low
+// and left so the cloud/sky remain visible; the login affordance lives in the
+// hero's top-right corner as requested.
 export function Hero() {
   return (
-    <section className="relative flex min-h-dvh flex-col justify-end px-6 pb-20 sm:px-10 sm:pb-24 lg:px-16">
-      {/* extra contrast wash, low-left on desktop, bottom on mobile */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_80%_at_15%_100%,rgba(10,8,16,0.78),transparent_60%)] sm:bg-[radial-gradient(80%_90%_at_0%_100%,rgba(10,8,16,0.82),transparent_55%)]"
-      />
+    <section className="relative flex min-h-dvh overflow-hidden px-5 py-5 sm:px-8 sm:py-7 lg:px-12">
+      <header className="absolute right-5 top-5 z-10 sm:right-8 sm:top-7 lg:right-12">
+        <Link
+          href="/signin"
+          className="inline-flex h-11 items-center justify-center rounded-[var(--radius)] border border-white/35 bg-canvas/35 px-5 text-sm font-semibold text-ink shadow-[0_1px_0_rgba(255,255,255,0.22)_inset,0_12px_32px_-18px_rgba(3,22,10,0.75)] backdrop-blur-md transition-[background-color,border-color,transform] duration-200 hover:-translate-y-px hover:border-white/55 hover:bg-canvas/50 active:translate-y-0"
+        >
+          Войти
+        </Link>
+      </header>
 
-      <div className="rise relative mx-auto w-full max-w-6xl text-center sm:mx-0 sm:max-w-2xl sm:text-left">
-        <p className="font-mono text-xs uppercase tracking-[0.32em] text-lime">
-          meet dhizume
-        </p>
-
-        <h1 className="font-display mt-5 text-balance text-5xl font-medium leading-[1.04] tracking-[-0.01em] text-ink [text-shadow:0_2px_30px_rgba(0,0,0,0.7)] sm:text-6xl lg:text-7xl">
-          she doesn&rsquo;t just reply.
-          <br />
-          she <em className="italic text-lime">does the work.</em>
+      <div className="rise relative z-10 mt-auto w-full max-w-4xl pb-5 sm:pb-9 lg:pb-12">
+        <h1 className="font-display mt-4 max-w-[11ch] text-balance text-6xl font-semibold leading-[0.92] text-ink [text-shadow:0_2px_28px_rgba(0,0,0,0.68)] sm:text-8xl lg:text-9xl">
+          Amyris
         </h1>
 
-        <p className="mx-auto mt-6 max-w-md text-pretty text-base leading-relaxed text-muted [text-shadow:0_1px_16px_rgba(0,0,0,0.7)] sm:mx-0 sm:text-lg">
-          a real assistant with a real browser. she researches, books, buys, and
-          texts the finished work right back to you.
+        <p className="mt-6 max-w-xl text-pretty text-base font-medium leading-relaxed text-ink/90 [text-shadow:0_1px_18px_rgba(0,0,0,0.72)] sm:text-lg">
+          ИИ который действительно полезен
         </p>
 
-        <div className="mt-9 flex flex-col items-center gap-3 sm:flex-row sm:items-stretch">
-          <Link href="/signin">
-            <Button variant="primary" size="lg" className="w-full sm:w-auto">
-              get started
-            </Button>
-          </Link>
-          <a href="#how">
-            <Button
-              variant="secondary"
-              size="lg"
-              className="w-full bg-surface-2/70 backdrop-blur-md sm:w-auto"
-            >
-              watch her work
-            </Button>
-          </a>
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <HoverButton
+            href={startHref}
+            data-testid="start-imessage"
+          >
+            Начать
+          </HoverButton>
         </div>
       </div>
     </section>

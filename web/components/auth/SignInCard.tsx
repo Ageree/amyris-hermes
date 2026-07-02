@@ -7,11 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-// Email + password AND Google OAuth (AUTH_GOOGLE_ID/SECRET are set on the
-// deployment as of 2026-06-22). Email-code (ResendOTP) stays hidden until
-// AUTH_RESEND_KEY lands. signIn("google") redirects the whole page through
-// Google → the Convex callback → back to SITE_URL + redirectTo.
-
 const inputClass = cn(
   "w-full bg-surface-2 border border-border rounded text-ink px-3 h-10",
   "placeholder:text-faint outline-none transition-colors",
@@ -19,11 +14,35 @@ const inputClass = cn(
 );
 
 type PasswordFlow = "signIn" | "signUp";
+type AuthMode = "phone" | "email";
+type PhoneStep = "phone" | "code";
+
 const MIN_PASSWORD = 8; // mirrors validatePasswordRequirements in convex/auth.ts
+
+function normalizePhoneInput(raw: string): string {
+  const trimmed = raw.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return "";
+  if (trimmed.startsWith("+")) return `+${digits}`;
+  if (/^8\d{10}$/.test(digits)) return `+7${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
+function isE164(phone: string): boolean {
+  return /^\+[1-9]\d{7,14}$/.test(phone);
+}
 
 export function SignInCard() {
   const router = useRouter();
   const { signIn } = useAuthActions();
+
+  const [mode, setMode] = useState<AuthMode>("phone");
+  const [phoneStep, setPhoneStep] = useState<PhoneStep>("phone");
+  const [phone, setPhone] = useState("");
+  const [verifiedPhone, setVerifiedPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [phonePending, setPhonePending] = useState(false);
+  const [phoneError, setPhoneError] = useState<string | null>(null);
 
   const [flow, setFlow] = useState<PasswordFlow>("signIn");
   const [email, setEmail] = useState("");
@@ -32,11 +51,65 @@ export function SignInCard() {
   const [pwPending, setPwPending] = useState(false);
   const [googlePending, setGooglePending] = useState(false);
 
+  const normalizedPhone = normalizePhoneInput(phone);
+  const phoneReady = isE164(normalizedPhone);
   const tooShort = flow === "signUp" && password.length > 0 && password.length < MIN_PASSWORD;
 
   function switchFlow(next: PasswordFlow) {
     setFlow(next);
     setError(null);
+  }
+
+  function switchMode(next: AuthMode) {
+    setMode(next);
+    setError(null);
+    setPhoneError(null);
+  }
+
+  async function handlePhoneStart(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (phonePending) return;
+    setPhoneError(null);
+    if (!phoneReady) {
+      setPhoneError("Введите номер в международном формате: +79991234567.");
+      return;
+    }
+    setPhonePending(true);
+    try {
+      await signIn("phone", { phone: normalizedPhone });
+      setVerifiedPhone(normalizedPhone);
+      setPhoneStep("code");
+    } catch {
+      setPhoneError("Не удалось отправить код. Проверьте номер и попробуйте еще раз.");
+    } finally {
+      setPhonePending(false);
+    }
+  }
+
+  async function handlePhoneCode(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (phonePending) return;
+    const enteredCode = code.trim();
+    const targetPhone = verifiedPhone || normalizedPhone;
+    setPhoneError(null);
+    if (!isE164(targetPhone)) {
+      setPhoneStep("phone");
+      setPhoneError("Сначала введите номер телефона.");
+      return;
+    }
+    if (enteredCode.length < 4) {
+      setPhoneError("Введите код из сообщения.");
+      return;
+    }
+    setPhonePending(true);
+    try {
+      await signIn("phone", { phone: targetPhone, code: enteredCode });
+      router.push("/dashboard");
+    } catch {
+      setPhoneError("Код не подошел или истек. Запросите новый код.");
+    } finally {
+      setPhonePending(false);
+    }
   }
 
   async function handlePassword(e: FormEvent<HTMLFormElement>) {
@@ -50,13 +123,8 @@ export function SignInCard() {
     setPwPending(true);
     try {
       await signIn("password", { email, password, flow });
-      // new users go to the pairing wizard to connect a channel first; returning
-      // users land straight on their dashboard.
       router.push(flow === "signUp" ? "/connect" : "/dashboard");
     } catch {
-      // Convex Auth surfaces raw server errors (InvalidAccountId, "account already
-      // exists", full stack traces — verbose on dev deployments) that must NEVER
-      // reach users. Always show a friendly, actionable message instead.
       setError(
         flow === "signUp"
           ? "couldn't create that account — it may already exist. try signing in."
@@ -72,9 +140,6 @@ export function SignInCard() {
     setError(null);
     setGooglePending(true);
     try {
-      // OAuth navigates the whole page away; on success we never return here.
-      // New Google users land on the dashboard (its empty-state guides them to
-      // connect a channel); returning users go straight to their dashboard.
       await signIn("google", { redirectTo: "/dashboard" });
     } catch {
       setError("couldn't start google sign-in. try again, or use email.");
@@ -83,114 +148,221 @@ export function SignInCard() {
   }
 
   return (
-    <Card className="w-full max-w-sm rise" data-testid="signin-card">
-      <div className="flex flex-col gap-5">
-        {/* explicit sign in / sign up choice — no hidden toggle, so new users
-            don't fall into "sign in" when they meant to create an account */}
-        <div
-          role="tablist"
-          aria-label="sign in or create an account"
-          className="grid grid-cols-2 gap-1 rounded bg-surface-2 p-1"
-        >
-          {(["signIn", "signUp"] as const).map((f) => (
-            <button
-              key={f}
-              role="tab"
-              type="button"
-              aria-selected={flow === f}
-              data-testid={f === "signUp" ? "tab-signup" : "tab-signin"}
-              onClick={() => switchFlow(f)}
-              className={cn(
-                "h-9 rounded text-sm lowercase transition-colors",
-                flow === f
-                  ? "bg-surface text-ink shadow-sm"
-                  : "text-faint hover:text-muted",
-              )}
-            >
-              {f === "signIn" ? "sign in" : "sign up"}
-            </button>
-          ))}
+    <Card className="w-full max-w-sm rise border-white/15 bg-surface/90 backdrop-blur-xl" data-testid="signin-card">
+      {mode === "phone" ? (
+        <div className="flex flex-col gap-5">
+          <div className="flex flex-col gap-1">
+            <h2 className="text-lg font-semibold text-ink">Введите номер</h2>
+            <p className="text-sm leading-relaxed text-muted">
+              Мы отправим код в iMessage/SMS и откроем ваш dashboard.
+            </p>
+          </div>
+
+          {phoneStep === "phone" ? (
+            <form onSubmit={handlePhoneStart} className="flex flex-col gap-3">
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs text-faint">Номер телефона</span>
+                <input
+                  className={inputClass}
+                  type="tel"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  placeholder="+79991234567"
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value)}
+                  required
+                  data-testid="phone-input"
+                />
+              </label>
+
+              {phoneError ? (
+                <p className="text-sm text-danger" role="alert">
+                  {phoneError}
+                </p>
+              ) : null}
+
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={phonePending || !phoneReady}
+                data-testid="phone-submit"
+              >
+                {phonePending ? "Отправляем код..." : "Получить код"}
+              </Button>
+            </form>
+          ) : (
+            <form onSubmit={handlePhoneCode} className="flex flex-col gap-3">
+              <div className="rounded-[var(--radius)] border border-border bg-surface-2 px-3 py-2 text-sm text-muted">
+                Код отправлен на <span className="font-mono text-ink">{verifiedPhone}</span>
+              </div>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs text-faint">Код</span>
+                <input
+                  className={cn(inputClass, "font-mono tracking-[0.22em]")}
+                  type="text"
+                  inputMode="numeric"
+                  autoComplete="one-time-code"
+                  placeholder="123456"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  required
+                  data-testid="phone-code"
+                />
+              </label>
+
+              {phoneError ? (
+                <p className="text-sm text-danger" role="alert">
+                  {phoneError}
+                </p>
+              ) : null}
+
+              <Button
+                type="submit"
+                variant="primary"
+                disabled={phonePending || code.trim().length < 4}
+                data-testid="phone-code-submit"
+              >
+                {phonePending ? "Проверяем..." : "Войти в dashboard"}
+              </Button>
+
+              <button
+                type="button"
+                className="self-center text-sm text-muted underline-offset-4 transition-colors hover:text-ink hover:underline"
+                onClick={() => {
+                  setPhoneStep("phone");
+                  setCode("");
+                  setPhoneError(null);
+                }}
+              >
+                Изменить номер
+              </button>
+            </form>
+          )}
+
+          <button
+            type="button"
+            className="text-sm text-faint underline-offset-4 transition-colors hover:text-muted hover:underline"
+            onClick={() => switchMode("email")}
+            data-testid="email-fallback"
+          >
+            Войти по email
+          </button>
         </div>
+      ) : (
+        <div className="flex flex-col gap-5">
+          <button
+            type="button"
+            className="self-start text-sm text-muted underline-offset-4 transition-colors hover:text-ink hover:underline"
+            onClick={() => switchMode("phone")}
+          >
+            ← вернуться к телефону
+          </button>
 
-        <form onSubmit={handlePassword} className="flex flex-col gap-3">
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs text-faint lowercase">email</span>
-            <input
-              className={inputClass}
-              type="email"
-              autoComplete="email"
-              placeholder="you@example.com"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              required
-            />
-          </label>
-
-          <label className="flex flex-col gap-1.5">
-            <span className="text-xs text-faint lowercase">password</span>
-            <input
-              className={inputClass}
-              type="password"
-              autoComplete={flow === "signUp" ? "new-password" : "current-password"}
-              placeholder="••••••••"
-              minLength={flow === "signUp" ? MIN_PASSWORD : undefined}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              required
-            />
-            {flow === "signUp" ? (
-              <span
+          <div
+            role="tablist"
+            aria-label="sign in or create an account"
+            className="grid grid-cols-2 gap-1 rounded bg-surface-2 p-1"
+          >
+            {(["signIn", "signUp"] as const).map((f) => (
+              <button
+                key={f}
+                role="tab"
+                type="button"
+                aria-selected={flow === f}
+                data-testid={f === "signUp" ? "tab-signup" : "tab-signin"}
+                onClick={() => switchFlow(f)}
                 className={cn(
-                  "text-xs lowercase",
-                  tooShort ? "text-danger" : "text-faint",
+                  "h-9 rounded text-sm transition-colors",
+                  flow === f
+                    ? "bg-surface text-ink shadow-sm"
+                    : "text-faint hover:text-muted",
                 )}
               >
-                at least {MIN_PASSWORD} characters
-              </span>
-            ) : null}
-          </label>
+                {f === "signIn" ? "sign in" : "sign up"}
+              </button>
+            ))}
+          </div>
 
-          {error ? (
-            <p className="text-sm text-danger lowercase" role="alert">
-              {error}
-            </p>
-          ) : null}
+          <form onSubmit={handlePassword} className="flex flex-col gap-3">
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-faint lowercase">email</span>
+              <input
+                className={inputClass}
+                type="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </label>
+
+            <label className="flex flex-col gap-1.5">
+              <span className="text-xs text-faint lowercase">password</span>
+              <input
+                className={inputClass}
+                type="password"
+                autoComplete={flow === "signUp" ? "new-password" : "current-password"}
+                placeholder="••••••••"
+                minLength={flow === "signUp" ? MIN_PASSWORD : undefined}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+              />
+              {flow === "signUp" ? (
+                <span
+                  className={cn(
+                    "text-xs lowercase",
+                    tooShort ? "text-danger" : "text-faint",
+                  )}
+                >
+                  at least {MIN_PASSWORD} characters
+                </span>
+              ) : null}
+            </label>
+
+            {error ? (
+              <p className="text-sm text-danger lowercase" role="alert">
+                {error}
+              </p>
+            ) : null}
+
+            <Button
+              type="submit"
+              variant="primary"
+              className="lowercase"
+              disabled={pwPending || email.length === 0 || password.length === 0}
+            >
+              {pwPending
+                ? flow === "signUp"
+                  ? "creating..."
+                  : "signing in..."
+                : flow === "signUp"
+                  ? "create account"
+                  : "sign in"}
+            </Button>
+          </form>
+
+          <div className="flex items-center gap-3" aria-hidden>
+            <span className="h-px flex-1 bg-border" />
+            <span className="text-xs text-faint lowercase">or</span>
+            <span className="h-px flex-1 bg-border" />
+          </div>
 
           <Button
-            type="submit"
-            variant="primary"
+            type="button"
+            variant="secondary"
             className="lowercase"
-            disabled={pwPending || email.length === 0 || password.length === 0}
+            onClick={handleGoogle}
+            disabled={googlePending || pwPending}
+            data-testid="google-signin"
           >
-            {pwPending
-              ? flow === "signUp"
-                ? "creating…"
-                : "signing in…"
-              : flow === "signUp"
-                ? "create account"
-                : "sign in"}
+            <GoogleIcon />
+            {googlePending ? "redirecting..." : "continue with google"}
           </Button>
-        </form>
-
-        {/* divider */}
-        <div className="flex items-center gap-3" aria-hidden>
-          <span className="h-px flex-1 bg-border" />
-          <span className="text-xs text-faint lowercase">or</span>
-          <span className="h-px flex-1 bg-border" />
         </div>
-
-        <Button
-          type="button"
-          variant="secondary"
-          className="lowercase"
-          onClick={handleGoogle}
-          disabled={googlePending || pwPending}
-          data-testid="google-signin"
-        >
-          <GoogleIcon />
-          {googlePending ? "redirecting…" : "continue with google"}
-        </Button>
-      </div>
+      )}
     </Card>
   );
 }

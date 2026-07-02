@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  readiness:
+    name: Readiness quality gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            web/package-lock.json
+            control-plane/package-lock.json
+            agent/package-lock.json
+            lab/photon-sidecar/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            requirements-dev.txt
+            fleet/controller/requirements.txt
+            lab/requirements.txt
+            lab/skeleton/requirements.txt
+
+      - name: Install root quality tooling
+        run: npm ci --ignore-scripts --workspaces=false
+
+      - name: Install app dependencies
+        run: |
+          npm --prefix web ci
+          npm --prefix control-plane ci
+          npm --prefix agent ci
+          npm --prefix lab/photon-sidecar ci
+
+      - name: Install Python quality tooling
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt -r fleet/controller/requirements.txt -r lab/requirements.txt -r lab/skeleton/requirements.txt
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Lint and static analysis
+        run: npm run lint
+
+      - name: Type check
+        run: npm run typecheck
+
+      - name: Unit tests with timing
+        run: npm run test:unit
+
+      - name: Coverage thresholds
+        run: npm run test:coverage
+
+      - name: Readiness quality scripts
+        run: npm run quality

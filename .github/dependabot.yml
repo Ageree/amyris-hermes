@@ -1,0 +1,70 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      monorepo-quality-tooling:
+        patterns:
+          - "*eslint*"
+          - "prettier"
+          - "knip"
+          - "syncpack"
+          - "jscpd"
+  - package-ecosystem: "npm"
+    directory: "/web"
+    schedule:
+      interval: "weekly"
+    groups:
+      web-runtime:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "convex"
+  - package-ecosystem: "npm"
+    directory: "/control-plane"
+    schedule:
+      interval: "weekly"
+    groups:
+      control-plane-runtime:
+        patterns:
+          - "convex"
+          - "@convex-dev/*"
+          - "@auth/core"
+  - package-ecosystem: "npm"
+    directory: "/agent"
+    schedule:
+      interval: "weekly"
+    groups:
+      agent-runtime:
+        patterns:
+          - "ai"
+          - "eve"
+          - "@vercel/connect"
+  - package-ecosystem: "npm"
+    directory: "/lab/photon-sidecar"
+    schedule:
+      interval: "weekly"
+    groups:
+      photon-runtime:
+        patterns:
+          - "spectrum-ts"
+          - "@opentelemetry/*"
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/fleet/controller"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/lab"
+    schedule:
+      interval: "weekly"
+  - package-ecosystem: "pip"
+    directory: "/lab/skeleton"
+    schedule:
+      interval: "weekly"

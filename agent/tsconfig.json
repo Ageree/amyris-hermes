@@ -6,8 +6,9 @@
     "types": ["node"],
     "strict": true,
     "esModuleInterop": true,
+    "allowImportingTsExtensions": true,
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["agent/**/*.ts", "evals/**/*.ts", ".eve/**/*.d.ts"]
+  "include": ["agent/**/*.ts", "evals/**/*.ts", "scripts/**/*.ts", ".eve/**/*.d.ts"]
 }

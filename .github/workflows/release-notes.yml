@@ -1,0 +1,28 @@
+name: Release notes
+
+on:
+  push:
+    branches: ["main"]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  changesets:
+    name: Maintain release notes PR
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: "npm"
+          cache-dependency-path: "package-lock.json"
+      - run: npm ci --ignore-scripts --workspaces=false
+      - uses: changesets/action@v1
+        with:
+          version: npm run release:notes
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

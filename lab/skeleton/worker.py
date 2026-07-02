@@ -21,37 +21,51 @@ number. Cross-tenant isolation is enforced at the claim layer (claimNextForUser
 is userId-scoped) and at inbound resolution (verified channelBindings only).
 Hermes-internal error text is never leaked back to the user.
 """
+
 from __future__ import annotations
 
 import logging
 import os
+import re
 import shutil
 import signal
 import threading
 import time
+import weakref as _weakref
+from contextlib import suppress
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
-from convex_client import ConvexClient
-from hermes_bridge import run_hermes
+import yaml
 
 # Channel layer (HARD dependency — it IS the reply path). Routes each reply to the
 # claimed message's own channel + address (multi-tenancy M2), replacing the single
 # hardcoded operator number.
 from channels import ChannelRegistry, SendblueChannel
 from channels.rich import TextPart, parse_rich
+from convex_client import ConvexClient
+from hermes_bridge import run_hermes
+from supermemory_client import SupermemoryClient, SupermemoryConfig
 
 # Fast lane is a SOFT dependency: a stale/partial deploy (worker.py updated but
 # fast_lane.py / bubbles.py not yet copied) must degrade to the unchanged
 # Hermes-only path, NOT crash-loop the always-on daemon at import time. Mirrors
 # the composio guard.
 try:
-    from fast_lane import contains_url, looks_like_build_request, fast_reply, stream_fast_reply
+    from fast_lane import (
+        contains_url,
+        fast_reply,
+        looks_like_build_request,
+        stream_fast_reply,
+    )
 except Exception:  # pragma: no cover - exercised only on a broken deploy
+
     def contains_url(text: str) -> bool:  # noqa: ARG001 - stub keeps the daemon alive
         return False
+
     def looks_like_build_request(text: str) -> bool:  # noqa: ARG001 - stub
         return False
+
     fast_reply = None
     stream_fast_reply = None
 
@@ -87,11 +101,21 @@ try:
 except Exception:  # pragma: no cover
     TypingKeepalive = None
 
-# composio_api lives in the connections skill scripts; reachable in the repo layout
-# (../skills/connections/scripts) and in the deployed worker tree (same dir as this file).
-import os as _os, sys as _sys
-for _cand in (_os.path.dirname(_os.path.abspath(__file__)),
-              _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "..", "skills", "connections", "scripts")):
+# composio_api lives in the connections skill scripts; reachable in the repo
+# layout (../skills/connections/scripts) and deployed worker tree.
+import os as _os
+import sys as _sys
+
+for _cand in (
+    _os.path.dirname(_os.path.abspath(__file__)),
+    _os.path.join(
+        _os.path.dirname(_os.path.abspath(__file__)),
+        "..",
+        "skills",
+        "connections",
+        "scripts",
+    ),
+):
     if _os.path.isdir(_cand) and _cand not in _sys.path:
         _sys.path.insert(0, _cand)
 try:
@@ -128,10 +152,8 @@ def should_stop() -> bool:
 
 def _handle_stop_signal(signum, frame) -> None:  # noqa: ARG001 - signal API shape
     """SIGTERM/SIGINT handler: request a graceful drain. Never raises."""
-    try:
+    with suppress(Exception):
         log.info("received signal %s — beginning graceful drain", signum)
-    except Exception:  # logging must never turn a signal into a crash
-        pass
     _STOP.set()
 
 
@@ -146,7 +168,11 @@ def _install_signal_handlers() -> None:
         try:
             signal.signal(sig, _handle_stop_signal)
         except Exception:  # pragma: no cover - platform/threading dependent
-            log.warning("could not install handler for signal %s (non-fatal)", sig, exc_info=True)
+            log.warning(
+                "could not install handler for signal %s (non-fatal)",
+                sig,
+                exc_info=True,
+            )
 
 
 MAX_REPLY_CHARS = 1800
@@ -174,7 +200,9 @@ def _load_soul() -> str:
     here = os.path.dirname(os.path.abspath(__file__))
     hh = os.path.expanduser(os.environ.get("HERMES_HOME", "~/.hermes-savedlab"))
     candidates = [
-        os.path.expanduser(os.environ["SOUL_PATH"]) if os.environ.get("SOUL_PATH") else None,
+        os.path.expanduser(os.environ["SOUL_PATH"])
+        if os.environ.get("SOUL_PATH")
+        else None,
         os.path.join(here, "SOUL.md"),
         os.path.join(hh, "SOUL.md"),
         os.path.join(here, "..", "personality", "SOUL.md"),
@@ -183,7 +211,7 @@ def _load_soul() -> str:
         if not path:
             continue
         try:
-            with open(path, "r", encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 return f.read().strip()
         except OSError:
             continue
@@ -197,11 +225,13 @@ class WorkerConfig:
     sendblue_key_id: str
     sendblue_secret: str
     sendblue_from: str
-    reply_target: str  # operator's E.164 — LEGACY FALLBACK only (userId-less rows); see A2
+    reply_target: (
+        str  # operator's E.164 — LEGACY FALLBACK only (userId-less rows); see A2
+    )
     hermes_home: str
     hermes_dir: str
     python_bin: str
-    poll_interval: float = 2.0          # ACTIVE interval (just after work / draining)
+    poll_interval: float = 2.0  # ACTIVE interval (just after work / draining)
     hermes_timeout: float = 180.0
     composio_user_id: str = ""
     # Fleet scoping: when USER_ID is set (a per-tenant container, M6), the worker
@@ -219,7 +249,7 @@ class WorkerConfig:
     # while keeping pickup snappy during a conversation).
     idle_poll_interval: float = 3.0
     idle_after: int = 6
-    intent_interval: float = 10.0       # wall-clock seconds between Composio intent polls
+    intent_interval: float = 10.0  # wall-clock seconds between Composio intent polls
     # Fast conversational lane (latency optimization). Disabled unless a MiniMax
     # key is present; flip FAST_LANE_ENABLED=0 to force everything through Hermes.
     minimax_api_key: str = ""
@@ -237,14 +267,22 @@ class WorkerConfig:
     # Medium lane: tool-free messages that need reasoning get a 2nd M3 call with
     # thinking ON (no tools) — faster than Hermes, better than a thinking-off answer.
     medium_lane_enabled: bool = True
-    medium_timeout: float = 25.0        # thinking needs more headroom than the probe
-    medium_max_tokens: int = 2048       # reasoning tokens count against this — keep generous
+    medium_timeout: float = 25.0  # thinking needs more headroom than the probe
+    medium_max_tokens: int = 2048  # reasoning tokens count against this — keep generous
     # Conversation MEMORY: prior turns for this user, fetched from Convex and
-    # spliced into the prompt so follow-ups ("я у тебя спросил") are understood
+    # spliced into the prompt so follow-up references are understood
     # in-lane instead of falling through to the slow stateless Hermes path.
     history_enabled: bool = True
-    history_turns: int = 6              # how many recent done messages to recall
-    history_char_cap: int = 600         # cap each stored text/reply (avoid huge tool dumps)
+    history_turns: int = 6  # how many recent done messages to recall
+    history_char_cap: int = 600  # cap each stored text/reply (avoid huge tool dumps)
+    # Durable Supermemory: tenant-scoped long-term memory, keyed by userId when
+    # present and by phone only for legacy rows. Missing key disables it safely.
+    supermemory_enabled: bool = True
+    supermemory_write_enabled: bool = True
+    supermemory_api_key: str = ""
+    supermemory_base_url: str = "https://api.supermemory.ai"
+    supermemory_search_limit: int = 8
+    supermemory_timeout: float = 10.0
     # Poke-style MULTI-BUBBLE: split a reply into a few short iMessage messages
     # (blank-line paragraphs -> separate bubbles), paced bubble_delay apart so they
     # arrive in order (Sendblue drains 1 msg/s and does NOT formally guarantee
@@ -292,7 +330,7 @@ class WorkerConfig:
     photon_project_secret: str = ""
 
     @classmethod
-    def from_env(cls) -> "WorkerConfig":
+    def from_env(cls) -> WorkerConfig:
         """Build from the environment. Required vars raise KeyError (fail fast)."""
         return cls(
             convex_url=os.environ["CONVEX_URL"],
@@ -319,7 +357,9 @@ class WorkerConfig:
             ),
             poll_interval=float(os.environ.get("POLL_INTERVAL", "0.5")),
             hermes_timeout=float(os.environ.get("HERMES_TIMEOUT", "180.0")),
-            composio_user_id=os.environ.get("COMPOSIO_USER_ID", os.environ.get("ALLOWED_USER_NUMBER", "")),
+            composio_user_id=os.environ.get(
+                "COMPOSIO_USER_ID", os.environ.get("ALLOWED_USER_NUMBER", "")
+            ),
             scoped_user_id=os.environ.get("USER_ID", ""),
             telegram_bot_token=os.environ.get("TELEGRAM_BOT_TOKEN", ""),
             telegram_webhook_secret=os.environ.get("TELEGRAM_WEBHOOK_SECRET", ""),
@@ -327,7 +367,9 @@ class WorkerConfig:
             idle_after=int(os.environ.get("IDLE_AFTER", "6")),
             intent_interval=float(os.environ.get("INTENT_INTERVAL", "10.0")),
             minimax_api_key=os.environ.get("MINIMAX_API_KEY", ""),
-            minimax_base_url=os.environ.get("MINIMAX_BASE_URL", DEFAULT_MINIMAX_BASE_URL),
+            minimax_base_url=os.environ.get(
+                "MINIMAX_BASE_URL", DEFAULT_MINIMAX_BASE_URL
+            ),
             minimax_model=os.environ.get("MINIMAX_MODEL", DEFAULT_MINIMAX_MODEL),
             soul=_load_soul(),
             fast_lane_enabled=_env_flag("FAST_LANE_ENABLED", True),
@@ -338,13 +380,25 @@ class WorkerConfig:
             history_enabled=_env_flag("HISTORY_ENABLED", True),
             history_turns=int(os.environ.get("HISTORY_TURNS", "6")),
             history_char_cap=int(os.environ.get("HISTORY_CHAR_CAP", "600")),
+            supermemory_enabled=_env_flag("SUPERMEMORY_ENABLED", True),
+            supermemory_write_enabled=_env_flag("SUPERMEMORY_WRITE_ENABLED", True),
+            supermemory_api_key=os.environ.get("SUPERMEMORY_API_KEY", ""),
+            supermemory_base_url=os.environ.get(
+                "SUPERMEMORY_BASE_URL", "https://api.supermemory.ai"
+            ),
+            supermemory_search_limit=int(
+                os.environ.get("SUPERMEMORY_SEARCH_LIMIT", "8")
+            ),
+            supermemory_timeout=float(os.environ.get("SUPERMEMORY_TIMEOUT", "10.0")),
             multi_bubble_enabled=_env_flag("MULTI_BUBBLE_ENABLED", True),
             bubble_max_count=int(os.environ.get("BUBBLE_MAX_COUNT", "4")),
             bubble_max_chars=int(os.environ.get("BUBBLE_MAX_CHARS", "1200")),
             bubble_delay=float(os.environ.get("BUBBLE_DELAY", "0.4")),
             typing_enabled=_env_flag("TYPING_ENABLED", True),
             typing_interval=float(os.environ.get("TYPING_INTERVAL", "6.0")),
-            typing_max_duration_ms=int(os.environ.get("TYPING_MAX_DURATION_MS", "10000")),
+            typing_max_duration_ms=int(
+                os.environ.get("TYPING_MAX_DURATION_MS", "10000")
+            ),
             streaming_enabled=_env_flag("STREAMING_ENABLED", True),
             quota_enabled=_env_flag("QUOTA_ENABLED", True),
             upsell_url=os.environ.get("UPGRADE_URL", ""),
@@ -356,10 +410,13 @@ class WorkerConfig:
             heartbeat_enabled=_env_flag("HEARTBEAT_ENABLED", True),
             # iMessage transport (Photon rich messages). Creds from the env only.
             imessage_provider=os.environ.get("IMESSAGE_PROVIDER", "sendblue"),
-            photon_sidecar_base=os.environ.get("PHOTON_SIDECAR_BASE", "http://127.0.0.1:8790"),
+            photon_sidecar_base=os.environ.get(
+                "PHOTON_SIDECAR_BASE", "http://127.0.0.1:8790"
+            ),
             photon_bearer=os.environ.get("PHOTON_SIDECAR_BEARER", ""),
             photon_sidecar_dir=os.environ.get(
-                "PHOTON_SIDECAR_DIR", "/Users/saveliy/Documents/Amyris/lab/photon-sidecar"
+                "PHOTON_SIDECAR_DIR",
+                "/Users/saveliy/Documents/Amyris/lab/photon-sidecar",
             ),
             photon_project_id=os.environ.get("PHOTON_PROJECT_ID", ""),
             photon_project_secret=os.environ.get("PHOTON_PROJECT_SECRET", ""),
@@ -380,7 +437,7 @@ def _fast_lane_model_ok(cfg: WorkerConfig) -> bool:
     return stem.startswith("minimax-m3")
 
 
-def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]) -> bool:
+def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Callable | None) -> bool:
     """Gate the fast lane: enabled, not obvious-heavy, and runnable.
 
     An injected fast_fn (tests) always counts; the default path additionally needs
@@ -390,15 +447,18 @@ def _fast_lane_allowed(cfg: WorkerConfig, text: str, fast_fn: Optional[Callable]
         return False
     if contains_url(text):  # links almost always need the real tool agent
         return False
-    if looks_like_build_request(text):  # "make me a site/app" needs create-site skill + terminal
+    if looks_like_build_request(
+        text
+    ):  # "make me a site/app" needs create-site skill + terminal
         return False
     if fast_fn is not None:
         return True
     return bool(cfg.minimax_api_key) and fast_reply is not None
 
 
-def _fetch_history(convex: Any, cfg: WorkerConfig, user_number: str,
-                   user_id: Optional[str] = None) -> list:
+def _fetch_history(
+    convex: Any, cfg: WorkerConfig, user_number: str, user_id: str | None = None
+) -> list:
     """Recent (text, reply) turns for this user, as OpenAI {role, content} dicts.
 
     Scopes by the STABLE tenant key (userId, A1) when the claimed row carries one
@@ -433,7 +493,75 @@ def _fetch_history(convex: Any, cfg: WorkerConfig, user_number: str,
     return msgs
 
 
-def _run_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list] = None) -> Optional[str]:
+_REMEMBER_RE = re.compile(r"\[\[remember:([^\]\n]+?)\]\]", re.IGNORECASE)
+
+
+def _memory_user_key(user_id: str | None, user_number: str) -> str:
+    """Stable tenant key for external memory."""
+    return (user_id or user_number or "").strip()
+
+
+def _supermemory_cfg(cfg: WorkerConfig) -> SupermemoryConfig:
+    return SupermemoryConfig(
+        api_key=cfg.supermemory_api_key,
+        base_url=cfg.supermemory_base_url,
+        enabled=cfg.supermemory_enabled,
+        write_enabled=cfg.supermemory_write_enabled,
+        search_limit=cfg.supermemory_search_limit,
+        timeout=cfg.supermemory_timeout,
+    )
+
+
+def _fetch_supermemory(cfg: WorkerConfig, user_key: str, query: str) -> list:
+    """Return one OpenAI-style system message with tenant-scoped Supermemory facts."""
+    sm_cfg = _supermemory_cfg(cfg)
+    client = SupermemoryClient.from_config(sm_cfg)
+    if client is None or not user_key:
+        return []
+    try:
+        facts = client.recall(user_key, query, limit=sm_cfg.search_limit)
+    except Exception:
+        log.exception("supermemory recall failed for %s", user_key)
+        return []
+    if not facts:
+        return []
+    content = "Durable user memory from Supermemory:\n" + "\n".join(
+        f"- {f}" for f in facts
+    )
+    return [{"role": "system", "content": content[:4000]}]
+
+
+def _extract_memory_markers(reply: str) -> list[str]:
+    return [m.strip() for m in _REMEMBER_RE.findall(reply or "") if m.strip()]
+
+
+def _remember_supermemory_turn(
+    cfg: WorkerConfig,
+    user_key: str,
+    text: str,
+    reply: str | None,
+) -> None:
+    """Best-effort durable memory write for one delivered turn."""
+    if not (user_key and reply):
+        return
+    sm_cfg = _supermemory_cfg(cfg)
+    if not sm_cfg.write_enabled:
+        return
+    client = SupermemoryClient.from_config(sm_cfg)
+    if client is None:
+        return
+    try:
+        for fact in _extract_memory_markers(reply):
+            client.remember_text(user_key, fact, kind="explicit_fact")
+        transcript = f"User: {text.strip()}\nAssistant: {reply.strip()}"
+        client.remember_text(user_key, transcript, kind="conversation_turn")
+    except Exception:
+        log.exception("supermemory write failed for %s", user_key)
+
+
+def _run_fast_lane(
+    text: str, cfg: WorkerConfig, history: list | None = None
+) -> str | None:
     """Production fast-lane call: one direct MiniMax-M3 turn, thinking disabled.
 
     Uses a TIGHT timeout (cfg.fast_probe_timeout) so a slow/hanging MiniMax probe
@@ -456,7 +584,12 @@ def _run_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list] = None)
     )
 
 
-def _run_stream_fast_lane(text: str, cfg: WorkerConfig, history: Optional[list], on_bubble: Callable[[str], None]):
+def _run_stream_fast_lane(
+    text: str,
+    cfg: WorkerConfig,
+    history: list | None,
+    on_bubble: Callable[[str], None],
+):
     """Production STREAMING fast-lane call -> StreamResult.
 
     Emits Poke-style bubbles via `on_bubble` as they are generated and resolves a
@@ -498,8 +631,7 @@ _NULL_TYPING = _NullTyping()
 # WeakSet skips even that on the hot path). ponytail: a process-global set, fine for
 # the singleton sidecar topology (one PhotonChannel per project); the ceiling is
 # "multiple distinct PhotonChannel instances" — each is ensured once independently.
-import weakref as _weakref
-_SIDECAR_READY: "_weakref.WeakSet" = _weakref.WeakSet()
+_SIDECAR_READY: _weakref.WeakSet = _weakref.WeakSet()
 
 
 def _ensure_photon_sidecar(channel: Any) -> None:
@@ -518,7 +650,9 @@ def _ensure_photon_sidecar(channel: Any) -> None:
         if ensure():
             _SIDECAR_READY.add(channel)
     except Exception:  # pragma: no cover - ensure_sidecar is already fail-soft
-        log.warning("photon ensure_sidecar raised (will retry next turn)", exc_info=True)
+        log.warning(
+            "photon ensure_sidecar raised (will retry next turn)", exc_info=True
+        )
 
 
 def _make_typing(channel: Any, cfg: WorkerConfig, target: str):
@@ -532,8 +666,11 @@ def _make_typing(channel: Any, cfg: WorkerConfig, target: str):
         return _NULL_TYPING
     try:
         return TypingKeepalive(
-            channel, target, interval=cfg.typing_interval,
-            max_duration_ms=cfg.typing_max_duration_ms, enabled=True,
+            channel,
+            target,
+            interval=cfg.typing_interval,
+            max_duration_ms=cfg.typing_max_duration_ms,
+            enabled=True,
         ).start()
     except Exception:  # pragma: no cover - typing must never break the reply
         log.debug("typing keepalive failed to start for %s", target, exc_info=True)
@@ -555,14 +692,24 @@ class _BubbleEmitter:
     gap. The typing indicator is re-poked after each send so the next chunk shows "…".
     """
 
-    def __init__(self, channel: Any, target: str, cfg: WorkerConfig, *, typing: Any = None, sleep_fn: Callable[[float], None] = time.sleep):
+    def __init__(
+        self,
+        channel: Any,
+        target: str,
+        cfg: WorkerConfig,
+        *,
+        typing: Any = None,
+        sleep_fn: Callable[[float], None] = time.sleep,
+    ):
         self._channel = channel
         self._target = target
         self._cfg = cfg
         self._typing = typing
         self._sleep = sleep_fn
         self.count = 0
-        self.first_at: Optional[float] = None  # monotonic of the first successful send (TTFB)
+        self.first_at: float | None = (
+            None  # monotonic of the first successful send (TTFB)
+        )
 
     def _send(self, chunk: str, *, pace: bool) -> None:
         text = (chunk or "").strip()
@@ -577,13 +724,19 @@ class _BubbleEmitter:
             try:
                 self._sleep(self._cfg.bubble_delay)
             except Exception:
-                log.debug("bubble delay sleep interrupted for %s", self._target, exc_info=True)
+                log.debug(
+                    "bubble delay sleep interrupted for %s", self._target, exc_info=True
+                )
         try:
             res = self._channel.send_message(self._target, text)
             if getattr(res, "ok", True) and self.first_at is None:
                 self.first_at = time.monotonic()
-        except Exception:  # defensive: a Channel impl should swallow, but never trust it
-            log.exception("channel reply failed (chunk %d) for %s", self.count, self._target)
+        except (
+            Exception
+        ):  # defensive: a Channel impl should swallow, but never trust it
+            log.exception(
+                "channel reply failed (chunk %d) for %s", self.count, self._target
+            )
         self.count += 1
         if self._typing is not None:
             self._typing.poke()
@@ -619,14 +772,16 @@ class _BubbleEmitter:
         if self._cfg.multi_bubble_enabled:
             chunks = self._split(rendered)
             if chunks and str(chunks[-1]).endswith("…"):
-                log.warning("reply for %s exceeded chunk budget; tail truncated", self._target)
+                log.warning(
+                    "reply for %s exceeded chunk budget; tail truncated", self._target
+                )
         else:
             chunks = [rendered.strip()]
-        for c in (chunks or [rendered.strip()]):
+        for c in chunks or [rendered.strip()]:
             self._send(c, pace=True)
         return self.count
 
-    def send_reply(self, reply: str, *, reply_to: Optional[str] = None) -> int:
+    def send_reply(self, reply: str, *, reply_to: str | None = None) -> int:
         """Send a brain reply, applying the rich-message contract (channels/rich.py).
 
         Parse the flat reply into ordered parts. The common case — a reply with no
@@ -657,14 +812,17 @@ class _BubbleEmitter:
                 if not getattr(res, "ok", True):
                     log.info(
                         "rich part %s not delivered to %s: %s",
-                        type(part).__name__, self._target, getattr(res, "error", None),
+                        type(part).__name__,
+                        self._target,
+                        getattr(res, "error", None),
                     )
                 elif self.first_at is None:
                     self.first_at = time.monotonic()
             except Exception:  # a Channel impl should swallow; never trust it
                 log.exception(
                     "channel send_rich failed (%s) for %s",
-                    type(part).__name__, self._target,
+                    type(part).__name__,
+                    self._target,
                 )
             self.count += 1
             if self._typing is not None:
@@ -684,7 +842,9 @@ def _use_streaming(cfg: WorkerConfig, channel_kind: str = "imessage") -> bool:
     )
 
 
-def _safe_fast_reply(text: str, cfg: WorkerConfig, history: Optional[list], mid: str) -> Optional[str]:
+def _safe_fast_reply(
+    text: str, cfg: WorkerConfig, history: list | None, mid: str
+) -> str | None:
     """Non-streaming fast lane, swallowing errors to a defer (None)."""
     try:
         return _run_fast_lane(text, cfg, history)
@@ -693,7 +853,10 @@ def _safe_fast_reply(text: str, cfg: WorkerConfig, history: Optional[list], mid:
         return None
 
 
-def _provider_msg_id(handle: str) -> Optional[str]:
+TG_HANDLE_WITH_MESSAGE_PARTS = 3
+
+
+def _provider_msg_id(handle: str) -> str | None:
     """Recover the inbound provider message id for reaction targeting.
 
     The Photon inbound consumer encodes it in the claim handle as
@@ -707,16 +870,27 @@ def _provider_msg_id(handle: str) -> Optional[str]:
     """
     h = handle or ""
     if h.startswith("photon:"):
-        pid = h[len("photon:"):].strip()
+        pid = h[len("photon:") :].strip()
         return pid or None
     if h.startswith("tg:"):
         parts = h.split(":")
-        return parts[2] if len(parts) >= 3 and parts[2] else None
+        return (
+            parts[2]
+            if len(parts) >= TG_HANDLE_WITH_MESSAGE_PARTS and parts[2]
+            else None
+        )
     return h or None  # bare handle = Sendblue Apple GUID (tapback target)
 
 
-def _complete_then_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str,
-                        emitter: "_BubbleEmitter", *, reply_to: Optional[str] = None) -> bool:
+def _complete_then_send(
+    convex: Any,
+    cfg: WorkerConfig,
+    mid: str,
+    reply: str,
+    emitter: _BubbleEmitter,
+    *,
+    reply_to: str | None = None,
+) -> bool:
     """Non-streaming completion guard: complete in Convex, THEN send the reply.
 
     A transient Convex `complete` failure degrades to `messages:fail` (terminal
@@ -758,7 +932,9 @@ def _complete_after_send(convex: Any, cfg: WorkerConfig, mid: str, reply: str) -
             {"workerSecret": cfg.worker_secret, "id": mid, "reply": reply},
         )
     except Exception as e:
-        log.exception("streaming complete failed for %s (reply already sent); marking failed", mid)
+        log.exception(
+            "streaming complete failed for %s (reply already sent); marking failed", mid
+        )
         try:
             convex.mutation(
                 "messages:fail",
@@ -779,16 +955,18 @@ def _as_registry(channels_or_client: Any, cfg: WorkerConfig) -> ChannelRegistry:
     """
     if isinstance(channels_or_client, ChannelRegistry):
         return channels_or_client
-    return ChannelRegistry({
-        "imessage": SendblueChannel(
-            channels_or_client,
-            max_bubbles=cfg.bubble_max_count,
-            max_chars=cfg.bubble_max_chars,
-        )
-    })
+    return ChannelRegistry(
+        {
+            "imessage": SendblueChannel(
+                channels_or_client,
+                max_bubbles=cfg.bubble_max_count,
+                max_chars=cfg.bubble_max_chars,
+            )
+        }
+    )
 
 
-def _maybe_heartbeat(convex: Any, cfg: WorkerConfig) -> Optional[str]:
+def _maybe_heartbeat(convex: Any, cfg: WorkerConfig) -> str | None:
     """Send a fleet heartbeat if enabled and in scoped mode. FAIL-SOFT.
 
     Returns the desired-state string from fleet:heartbeat ("running" | "stopped"
@@ -804,18 +982,20 @@ def _maybe_heartbeat(convex: Any, cfg: WorkerConfig) -> Optional[str]:
     if not cfg.scoped_user_id:
         return None
     if fleet_client is None:
-        log.debug("fleet_client unavailable; skipping heartbeat for %s", cfg.scoped_user_id)
+        log.debug(
+            "fleet_client unavailable; skipping heartbeat for %s", cfg.scoped_user_id
+        )
         return None
     return fleet_client.heartbeat(convex, cfg.worker_secret, cfg.scoped_user_id)
 
 
-def process_one(
+def process_one(  # noqa: C901, PLR0912, PLR0915
     convex: Any,
     channels: Any,
     cfg: WorkerConfig,
     *,
     run_fn: Callable[..., str] = run_hermes,
-    fast_fn: Optional[Callable[[str], Optional[str]]] = None,
+    fast_fn: Callable[[str], str | None] | None = None,
     sleep_fn: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Claim and process at most one queued message.
@@ -846,14 +1026,18 @@ def process_one(
     # "shared" is checked first so it overrides the scoped/legacy default even if a
     # stray USER_ID is present; it is enabled only by an explicit WORKER_MODE=shared.
     if cfg.worker_mode == "shared":
-        claimed = convex.mutation("messages:claimNextAny", {"workerSecret": cfg.worker_secret})
+        claimed = convex.mutation(
+            "messages:claimNextAny", {"workerSecret": cfg.worker_secret}
+        )
     elif cfg.scoped_user_id:
         claimed = convex.mutation(
             "messages:claimNextForUser",
             {"workerSecret": cfg.worker_secret, "userId": cfg.scoped_user_id},
         )
     else:
-        claimed = convex.mutation("messages:claimNext", {"workerSecret": cfg.worker_secret})
+        claimed = convex.mutation(
+            "messages:claimNext", {"workerSecret": cfg.worker_secret}
+        )
     if not claimed:
         return False
 
@@ -861,6 +1045,7 @@ def process_one(
     text = claimed["text"]
     user_number = claimed.get("userNumber") or ""
     user_id = claimed.get("userId")
+    user_key = _memory_user_key(user_id, user_number)
     channel_kind = claimed.get("channel") or "imessage"
     # A2: route by the claimed row's OWN address. cfg.reply_target is the legacy
     # fallback ONLY for userId-less (operator/pre-migration) rows. A TENANT row
@@ -869,17 +1054,26 @@ def process_one(
     reply_target = claimed.get("replyTarget") or user_number
     if not reply_target:
         if user_id:
-            log.error("tenant row %s (user %s) has no reply address; marking failed", mid, user_id)
+            log.error(
+                "tenant row %s (user %s) has no reply address; marking failed",
+                mid,
+                user_id,
+            )
             try:
                 convex.mutation(
                     "messages:fail",
-                    {"workerSecret": cfg.worker_secret, "id": mid,
-                     "error": "tenant row missing reply address"},
+                    {
+                        "workerSecret": cfg.worker_secret,
+                        "id": mid,
+                        "error": "tenant row missing reply address",
+                    },
                 )
             except Exception:
                 log.exception("fail mutation also failed for %s", mid)
             return True
-        reply_target = cfg.reply_target  # legacy fallback: operator/pre-migration rows only
+        reply_target = (
+            cfg.reply_target
+        )  # legacy fallback: operator/pre-migration rows only
     started = time.monotonic()
     lane = "hermes"  # updated to "fastlane" if the fast lane answers
     history: list = []
@@ -899,8 +1093,11 @@ def process_one(
         try:
             convex.mutation(
                 "messages:fail",
-                {"workerSecret": cfg.worker_secret, "id": mid,
-                 "error": f"unconfigured channel {channel_kind}"},
+                {
+                    "workerSecret": cfg.worker_secret,
+                    "id": mid,
+                    "error": f"unconfigured channel {channel_kind}",
+                },
             )
         except Exception:
             log.exception("fail mutation also failed for %s", mid)
@@ -919,7 +1116,9 @@ def process_one(
     # NO lane (zero model spend). A Convex error => FAIL OPEN (proceed unmetered).
     handle = claimed.get("handle") or ""
     metered = bool(
-        cfg.quota_enabled and quota_client is not None and user_id
+        cfg.quota_enabled
+        and quota_client is not None
+        and user_id
         and not quota_client.is_synthetic(handle)
     )
     reserved = False
@@ -935,22 +1134,27 @@ def process_one(
             except Exception:
                 log.exception("complete (upsell) failed for %s", mid)
             _BubbleEmitter(channel, reply_target, cfg).send_text(msg)
-            log.info("processed %s lane=quota-denied reason=%s", mid, verdict.get("reason"))
+            log.info(
+                "processed %s lane=quota-denied reason=%s", mid, verdict.get("reason")
+            )
             return True
         # A fail-open verdict reserved NOTHING -> don't record usage or release later.
         reserved = not verdict.get("fail_open", False)
 
     typing = _make_typing(channel, cfg, reply_target)
-    emitter = _BubbleEmitter(channel, reply_target, cfg, typing=typing, sleep_fn=sleep_fn)
+    emitter = _BubbleEmitter(
+        channel, reply_target, cfg, typing=typing, sleep_fn=sleep_fn
+    )
     t_hist = started  # stamp set after history fetch (stage timing)
     hard_failed = False  # set on a hermes hard failure -> refund the reserved unit
     try:
         # Conversation memory: prior turns for this user (best-effort, [] on error).
         # Scoped by userId when present (A1) so no tenant's transcript bleeds across.
         history = _fetch_history(convex, cfg, user_number, user_id=user_id)
+        history = _fetch_supermemory(cfg, user_key, text) + history
         t_hist = time.monotonic()
 
-        reply: Optional[str] = None
+        reply: str | None = None
         completed = False
 
         if _fast_lane_allowed(cfg, text, fast_fn):
@@ -964,7 +1168,9 @@ def process_one(
                     full = None
                 if full is not None:
                     reply, lane = full, "fastlane"
-                    completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
+                    completed = _complete_then_send(
+                        convex, cfg, mid, full, emitter, reply_to=reply_to
+                    )
             elif _use_streaming(cfg, channel_kind):
                 # Production streaming: bubbles are sent AS generated; complete
                 # AFTER (the user already has the answer).
@@ -981,14 +1187,18 @@ def process_one(
                     full = _safe_fast_reply(text, cfg, history, mid)
                     if full is not None:
                         reply, lane = full, "fastlane"
-                        completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
+                        completed = _complete_then_send(
+                            convex, cfg, mid, full, emitter, reply_to=reply_to
+                        )
                 # else: deferred -> Hermes
             else:
                 # streaming disabled/unavailable: non-streaming fast lane + batch send.
                 full = _safe_fast_reply(text, cfg, history, mid)
                 if full is not None:
                     reply, lane = full, "fastlane"
-                    completed = _complete_then_send(convex, cfg, mid, full, emitter, reply_to=reply_to)
+                    completed = _complete_then_send(
+                        convex, cfg, mid, full, emitter, reply_to=reply_to
+                    )
 
         if not completed:
             # --- Heavy lane: full Hermes ---------------------------------------
@@ -1016,7 +1226,11 @@ def process_one(
                 hard_failed = True  # undelivered turn -> refund the reserved unit
                 convex.mutation(
                     "messages:fail",
-                    {"workerSecret": cfg.worker_secret, "id": mid, "error": str(e)[:500]},
+                    {
+                        "workerSecret": cfg.worker_secret,
+                        "id": mid,
+                        "error": str(e)[:500],
+                    },
                 )
                 emitter.send_text(ERROR_REPLY)
     finally:
@@ -1029,9 +1243,16 @@ def process_one(
             quota_client.release_reserve(convex, cfg.worker_secret, user_id)
         else:
             quota_client.record_usage(
-                convex, cfg.worker_secret, user_id,
-                message_id=mid, lane=lane, channel=channel_kind,
+                convex,
+                cfg.worker_secret,
+                user_id,
+                message_id=mid,
+                lane=lane,
+                channel=channel_kind,
             )
+
+    if not hard_failed:
+        _remember_supermemory_turn(cfg, user_key, text, reply)
 
     # Observability: lane, bubble count, history depth, end-to-end latency, and the
     # stage breakdown — ttfb (claim -> FIRST bubble on the wire = perceived latency),
@@ -1039,43 +1260,65 @@ def process_one(
     now = time.monotonic()
     ttfb = (emitter.first_at - started) if emitter.first_at is not None else None
     log.info(
-        "processed %s lane=%s bubbles=%d history=%d in_chars=%d hist=%.2fs ttfb=%s dt=%.2fs",
-        mid, lane, emitter.count, len(history), len(text or ""),
-        t_hist - started, ("%.2fs" % ttfb) if ttfb is not None else "n/a", now - started,
+        "processed %s lane=%s bubbles=%d history=%d in_chars=%d hist=%.2fs "
+        "ttfb=%s dt=%.2fs",
+        mid,
+        lane,
+        emitter.count,
+        len(history),
+        len(text or ""),
+        t_hist - started,
+        (f"{ttfb:.2f}s") if ttfb is not None else "n/a",
+        now - started,
     )
     return True
 
 
-def process_intents(convex: Any, cfg: WorkerConfig, *, composio: Optional[Any] = None, now: Optional[float] = None) -> None:
+def process_intents(
+    convex: Any,
+    cfg: WorkerConfig,
+    *,
+    composio: Any | None = None,
+    now: float | None = None,
+) -> None:
     """Poll Composio status for pending intents; resolve (enqueue resume) or expire.
 
     Never raises — a failure here must not kill the loop.
     """
-    import time as _t
-    now = _t.time() if now is None else now
+    now = time.time() if now is None else now
     if composio is None:
         if ComposioClient is None or not os.environ.get("COMPOSIO_API_KEY"):
             return
         composio = ComposioClient(user_id=cfg.composio_user_id)
     try:
-        intents = convex.query("intents:listPending", {"workerSecret": cfg.worker_secret}) or []
+        intents = (
+            convex.query("intents:listPending", {"workerSecret": cfg.worker_secret})
+            or []
+        )
     except Exception:
         log.exception("listPending failed")
         return
     for it in intents:
         try:
             if now - float(it.get("createdAt", now)) > cfg.intent_ttl:
-                convex.mutation("intents:expireIntent",
-                                {"workerSecret": cfg.worker_secret, "id": it["id"]})
+                convex.mutation(
+                    "intents:expireIntent",
+                    {"workerSecret": cfg.worker_secret, "id": it["id"]},
+                )
                 continue
             uid = it.get("userNumber") or cfg.composio_user_id
             active = []
             for tk in it.get("requiredToolkits", []):
                 if composio.connection_status(tk, user_id=uid) == "ACTIVE":
                     active.append(tk)
-            convex.mutation("intents:resolveIntent", {
-                "workerSecret": cfg.worker_secret, "id": it["id"], "connectedToolkits": active,
-            })
+            convex.mutation(
+                "intents:resolveIntent",
+                {
+                    "workerSecret": cfg.worker_secret,
+                    "id": it["id"],
+                    "connectedToolkits": active,
+                },
+            )
         except Exception:
             log.exception("intent %s poll failed", it.get("id"))
 
@@ -1083,14 +1326,14 @@ def process_intents(convex: Any, cfg: WorkerConfig, *, composio: Optional[Any] =
 def run_loop(
     cfg: WorkerConfig,
     *,
-    convex: Optional[Any] = None,
-    channels: Optional[Any] = None,
-    sendblue: Optional[Any] = None,
+    convex: Any | None = None,
+    channels: Any | None = None,
+    sendblue: Any | None = None,
     process_fn: Callable[..., bool] = process_one,
-    intent_fn: Optional[Callable[..., None]] = process_intents,
+    intent_fn: Callable[..., None] | None = process_intents,
     sleep_fn: Callable[[float], None] = time.sleep,
     time_fn: Callable[[], float] = time.monotonic,
-    max_iterations: Optional[int] = None,
+    max_iterations: int | None = None,
 ) -> None:
     """Poll the durable queue forever (or `max_iterations` times for tests).
 
@@ -1115,7 +1358,7 @@ def run_loop(
         registry = ChannelRegistry.from_config(cfg)
     i = 0
     empties = 0
-    last_intent: Optional[float] = None
+    last_intent: float | None = None
     while max_iterations is None or i < max_iterations:
         # Graceful shutdown (Bug H3): stop CLAIMING new work the moment a drain was
         # requested (SIGTERM/SIGINT or desired=stopped). Any in-flight process_one
@@ -1145,7 +1388,7 @@ def run_loop(
                     cfg.scoped_user_id,
                 )
                 request_stop()
-                # Skip claiming new work this iteration; exit on the next loop-top check.
+                # Skip claiming new work this iteration; exit on next loop-top check.
                 continue
             did = process_fn(convex, registry, cfg)
         except Exception:
@@ -1155,7 +1398,11 @@ def run_loop(
             empties = 0
         else:
             empties += 1
-            interval = cfg.poll_interval if empties <= cfg.idle_after else cfg.idle_poll_interval
+            interval = (
+                cfg.poll_interval
+                if empties <= cfg.idle_after
+                else cfg.idle_poll_interval
+            )
             sleep_fn(interval)
 
 
@@ -1168,9 +1415,21 @@ def run_loop(
 # cli toolset, add it here too (the alternative — importing hermes' resolver — is
 # unavailable: hermes lives in a separate venv the worker cannot import).
 _CLI_TOOLSETS_NO_BROWSER = [
-    "clarify", "code_execution", "cronjob", "delegation", "file", "image_gen",
-    "memory", "messaging", "session_search", "skills", "terminal", "todo",
-    "tts", "vision", "web",
+    "clarify",
+    "code_execution",
+    "cronjob",
+    "delegation",
+    "file",
+    "image_gen",
+    "memory",
+    "messaging",
+    "session_search",
+    "skills",
+    "terminal",
+    "todo",
+    "tts",
+    "vision",
+    "web",
 ]
 
 
@@ -1200,8 +1459,6 @@ def _enforce_model_block(hermes_home: str) -> None:
         return
     cfg_path = os.path.join(home, "config.yaml")
     try:
-        import yaml  # pyyaml (skeleton requirement)
-
         cfg: dict = {}
         if os.path.exists(cfg_path):
             with open(cfg_path) as f:
@@ -1209,10 +1466,12 @@ def _enforce_model_block(hermes_home: str) -> None:
         is_or = key.startswith("sk-or-")
         model = cfg.setdefault("model", {})
         model["default"] = os.environ.get("MINIMAX_MODEL") or (
-            "minimax/minimax-m3" if is_or else "MiniMax-M3")
+            "minimax/minimax-m3" if is_or else "MiniMax-M3"
+        )
         model["provider"] = "minimax"
         model["base_url"] = os.environ.get("MINIMAX_BASE_URL") or (
-            "https://openrouter.ai/api/v1" if is_or else "https://api.minimax.io/v1")
+            "https://openrouter.ai/api/v1" if is_or else "https://api.minimax.io/v1"
+        )
         with open(cfg_path, "w") as f:
             yaml.safe_dump(cfg, f, sort_keys=False, allow_unicode=True)
     except Exception as e:  # fail-soft: a config hiccup must not block the turn
@@ -1232,8 +1491,6 @@ def seed_browser_harness(hermes_home: str) -> bool:
     if not _truthy(os.environ.get("BROWSER_HARNESS_ENABLED", "1")):
         return False
     try:
-        import yaml  # pyyaml (skeleton requirement)
-
         home = os.path.expanduser(hermes_home)
         os.makedirs(home, exist_ok=True)
         cfg_path = os.path.join(home, "config.yaml")
@@ -1258,13 +1515,20 @@ def seed_browser_harness(hermes_home: str) -> bool:
         # env so it's present AND so an agent-tampered provider can't persist.
         _enforce_model_block(home)
         # Seed the skill instruction so Hermes knows to drive the harness.
-        src = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                           "..", "skills", "browser-harness", "SKILL.md")
+        src = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "..",
+            "skills",
+            "browser-harness",
+            "SKILL.md",
+        )
         if os.path.exists(src):
             dst_dir = os.path.join(home, "skills", "browser-harness")
             os.makedirs(dst_dir, exist_ok=True)
             shutil.copyfile(src, os.path.join(dst_dir, "SKILL.md"))
-        log.info("browser-harness: tenant flipped to Lane B (built-in browser disabled)")
+        log.info(
+            "browser-harness: tenant flipped to Lane B (built-in browser disabled)"
+        )
         return True
     except Exception as e:  # fail-soft: keep the built-in browser
         log.warning("browser-harness seed failed (built-in browser remains): %s", e)
@@ -1287,13 +1551,12 @@ def seed_create_site(hermes_home: str) -> bool:
     if not _truthy(os.environ.get("CREATE_SITE_ENABLED", "1")):
         return False
     try:
-        import yaml  # pyyaml (skeleton requirement)
-
         home = os.path.expanduser(hermes_home)
         os.makedirs(home, exist_ok=True)
         # Copy the skill (SKILL.md + scripts/publish.py) into HERMES_HOME/skills.
-        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                               "..", "skills", "create-site")
+        src_dir = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "..", "skills", "create-site"
+        )
         dst_dir = os.path.join(home, "skills", "create-site")
         os.makedirs(os.path.join(dst_dir, "scripts"), exist_ok=True)
         for rel in ("SKILL.md", os.path.join("scripts", "publish.py")):
@@ -1304,7 +1567,9 @@ def seed_create_site(hermes_home: str) -> bool:
             if os.path.exists(s) and os.path.abspath(s) != os.path.abspath(d):
                 shutil.copyfile(s, d)
         script = os.path.join(dst_dir, "scripts", "publish.py")
-        os.environ["SITE_PUBLISH_PY"] = script  # SKILL.md runs `python3 "$SITE_PUBLISH_PY"`
+        os.environ["SITE_PUBLISH_PY"] = (
+            script  # SKILL.md runs `python3 "$SITE_PUBLISH_PY"`
+        )
 
         cfg_path = os.path.join(home, "config.yaml")
         cfg: dict = {}
@@ -1327,7 +1592,9 @@ def seed_create_site(hermes_home: str) -> bool:
         return False
 
 
-def _bootstrap_photon_inbound(cfg: WorkerConfig, *, convex: Optional[Any] = None) -> WorkerConfig:
+def _bootstrap_photon_inbound(
+    cfg: WorkerConfig, *, convex: Any | None = None
+) -> WorkerConfig:
     """Wire the Photon inbound consumer (W1) + enforce the bearer precondition (W4).
 
     Photon inbound flows over the loopback sidecar's /inbound stream, NOT an HTTP
@@ -1386,7 +1653,9 @@ def _bootstrap_photon_inbound(cfg: WorkerConfig, *, convex: Optional[Any] = None
         threading.Thread(
             target=consumer.run_forever, name="photon-inbound", daemon=True
         ).start()
-        log.info("photon inbound consumer started (sidecar %s)", cfg.photon_sidecar_base)
+        log.info(
+            "photon inbound consumer started (sidecar %s)", cfg.photon_sidecar_base
+        )
     except Exception:  # FAIL-SOFT: a hiccup must never block run_loop
         log.exception("photon inbound bootstrap failed (degraded — no rich inbound)")
     return cfg
@@ -1410,12 +1679,17 @@ def main() -> None:
         log.warning(
             "fast lane model %r does not honor thinking-disabled (only MiniMax-M3 "
             "does) — the fast lane will run with reasoning ON and be slow. Set "
-            "MINIMAX_MODEL=MiniMax-M3 or FAST_LANE_ENABLED=0.", cfg.minimax_model,
+            "MINIMAX_MODEL=MiniMax-M3 or FAST_LANE_ENABLED=0.",
+            cfg.minimax_model,
         )
     log.info(
-        "worker starting: polling %s (active %ss / idle %ss), mode=%s, model=%s, fast_lane=%s",
-        cfg.convex_url, cfg.poll_interval, cfg.idle_poll_interval,
-        cfg.worker_mode, cfg.minimax_model,
+        "worker starting: polling %s (active %ss / idle %ss), mode=%s, "
+        "model=%s, fast_lane=%s",
+        cfg.convex_url,
+        cfg.poll_interval,
+        cfg.idle_poll_interval,
+        cfg.worker_mode,
+        cfg.minimax_model,
         cfg.fast_lane_enabled and bool(cfg.minimax_api_key) and fast_reply is not None,
     )
     run_loop(cfg)

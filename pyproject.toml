@@ -1,0 +1,104 @@
+[tool.black]
+line-length = 88
+target-version = ["py39"]
+include = "\\.pyi?$"
+exclude = '''
+/(
+  \.git
+  | \.mypy_cache
+  | \.pytest_cache
+  | \.ruff_cache
+  | \.venv
+  | __pycache__
+)/
+'''
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+extend-exclude = [
+  ".git",
+  ".mypy_cache",
+  ".pytest_cache",
+  ".ruff_cache",
+  ".venv",
+  "__pycache__",
+]
+
+[tool.ruff.lint]
+select = [
+  "ARG",
+  "B",
+  "C90",
+  "E",
+  "F",
+  "I",
+  "N",
+  "PL",
+  "RUF",
+  "SIM",
+  "UP",
+  "W",
+]
+ignore = [
+  "PLR0913",
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 12
+
+[tool.ruff.lint.pylint]
+max-args = 6
+max-branches = 12
+max-returns = 6
+max-statements = 50
+
+[tool.mypy]
+python_version = "3.9"
+strict = true
+warn_unreachable = true
+warn_unused_configs = true
+pretty = true
+files = [
+  "fleet/controller",
+  "lab/skeleton",
+]
+exclude = [
+  "\\.venv/",
+  "__pycache__/",
+]
+
+[[tool.mypy.overrides]]
+module = [
+  "fastapi.*",
+  "uvicorn.*",
+]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers --durations=20"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+  "unit: fast, network-free unit test",
+  "convex_e2e: requires a real dev Convex deployment",
+  "live_channel: requires a real channel send",
+]
+
+[tool.coverage.run]
+branch = true
+source = [
+  "fleet/controller",
+  "lab/skeleton",
+]
+omit = [
+  "*/tests/*",
+  "*/test_*.py",
+  "*/__pycache__/*",
+]
+
+[tool.coverage.report]
+fail_under = 70
+show_missing = true
+skip_covered = true

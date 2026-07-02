@@ -8,12 +8,9 @@ import { RevealObserver } from "@/components/RevealObserver";
 import "./globals.css";
 
 // Geist (body/ui/mono) is self-hosted via the `geist` package — no network at
-// runtime. Cormorant Garamond (display) is self-hosted by next/font at BUILD
-// time (latin subset inlined into the build), so the Vercel build stays
-// deterministic with no runtime font fetch. A high-contrast romantic garalde
-// serif is the native typography of dhizume's victorian-gothic world; used for
-// display headlines only, Geist carries all body + ui. The CSS variables feed
-// the --font-sans / --font-mono / --font-display tokens in globals.css (@theme).
+// runtime. Cormorant Garamond is self-hosted by next/font at build time and gives
+// the wallpaper-led brand a softer display voice. The CSS variables feed the
+// --font-sans / --font-mono / --font-display tokens in globals.css (@theme).
 const display = Cormorant_Garamond({
   subsets: ["latin"],
   weight: ["500", "600", "700"],
@@ -23,16 +20,16 @@ const display = Cormorant_Garamond({
 });
 export const metadata: Metadata = {
   metadataBase: new URL("https://hermes-fleet-web.vercel.app"),
-  title: "dhizume, an assistant that lives in imessage & telegram",
+  title: "Amyris — ассистент в iMessage",
   description:
-    "meet dhizume: a real assistant with a real browser. she books, buys, digs through the web, and reports back, right in the chat you already use. lowercase by design.",
-  icons: { icon: "/dhizume/avatar.png" },
+    "Amyris принимает задачи прямо в iMessage и доводит их до результата.",
+  icons: { icon: "/ascii-magic/wallpaper.png" },
   openGraph: {
-    title: "dhizume, an assistant that lives in your chat",
+    title: "Amyris — ассистент в iMessage",
     description:
-      "a real assistant with a real browser. she books, buys, researches, and reports back in imessage or telegram.",
+      "Начните в iMessage или войдите в кабинет по номеру телефона.",
     type: "website",
-    images: ["/dhizume/og.png"],
+    images: ["/ascii-magic/wallpaper.png"],
   },
 };
 

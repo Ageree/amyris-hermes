@@ -2,14 +2,13 @@
 
 All network / docker / gcloud calls are mocked via injected fakes.
 """
+# ruff: noqa: ARG001, ARG002, E501, PLC0415, PLR2004, SIM117
+
 from __future__ import annotations
 
-import time
 from dataclasses import replace
-from typing import Iterator
 
 import pytest
-
 from controller import (
     ControllerDeps,
     _build_env,
@@ -19,13 +18,12 @@ from controller import (
     _do_stop,
     _mirror_running_tenants,
     reconcile_once,
-    run,
 )
-
 
 # ---------------------------------------------------------------------------
 # _decide tests
 # ---------------------------------------------------------------------------
+
 
 class TestDecide:
     def _inst(self, **overrides) -> dict:
@@ -55,18 +53,24 @@ class TestDecide:
         assert _decide(inst, deps) == "launch"
 
     def test_desired_running_status_running_no_heartbeat_is_relaunch(self, deps):
-        inst = self._inst(desired="running", status="running", containerId="c1", heartbeatAt=None)
+        inst = self._inst(
+            desired="running", status="running", containerId="c1", heartbeatAt=None
+        )
         assert _decide(inst, deps) == "relaunch"
 
     def test_desired_running_status_running_stale_heartbeat_is_relaunch(self, deps):
         # now_fn = 1_000_000.0 s, stale_ttl = 90 s -> anything older than 999_910_000 ms is stale
         stale_ms = (1_000_000.0 - 200) * 1000  # 200s ago → stale
-        inst = self._inst(desired="running", status="running", containerId="c1", heartbeatAt=stale_ms)
+        inst = self._inst(
+            desired="running", status="running", containerId="c1", heartbeatAt=stale_ms
+        )
         assert _decide(inst, deps) == "relaunch"
 
     def test_desired_running_status_running_fresh_heartbeat_is_noop(self, deps):
         fresh_ms = (1_000_000.0 - 10) * 1000  # 10s ago — within 90s TTL
-        inst = self._inst(desired="running", status="running", containerId="c1", heartbeatAt=fresh_ms)
+        inst = self._inst(
+            desired="running", status="running", containerId="c1", heartbeatAt=fresh_ms
+        )
         assert _decide(inst, deps) == "noop"
 
     def test_desired_stopped_with_container_is_stop(self, deps):
@@ -81,6 +85,7 @@ class TestDecide:
 # ---------------------------------------------------------------------------
 # Launch action tests
 # ---------------------------------------------------------------------------
+
 
 class TestDoLaunch:
     def _inst(self, **overrides) -> dict:
@@ -142,7 +147,17 @@ class TestDoLaunch:
         _do_launch(self._inst(userId="u1"), deps)
         assert "u1" in fake_state_sync.rehydrated
 
-    def test_launch_skips_worker_secret_when_disabled(self, deps, fake_secrets, fake_docker):
+    def test_gce_launch_uses_vm_name_and_skips_local_rehydrate(
+        self, deps, fake_state_sync, fake_convex
+    ):
+        deps.cfg = replace(deps.cfg, runtime_backend="gce_vm")
+        _do_launch(self._inst(userId="u1"), deps)
+        assert fake_state_sync.rehydrated == []
+        assert fake_convex.claimed_calls[0]["hostVm"] == "hermes-u1"
+
+    def test_launch_skips_worker_secret_when_disabled(
+        self, deps, fake_secrets, fake_docker
+    ):
         # v1 default: PER_INSTANCE_SECRETS off -> do NOT mint a per-instance secret
         # (avoids empty, enumerable Secret Manager secrets) and do NOT inject a dead
         # WORKER_SECRET_REF the worker never reads.
@@ -151,7 +166,9 @@ class TestDoLaunch:
         assert fake_secrets.ensured == []
         assert "WORKER_SECRET_REF" not in fake_docker.ran[0]["env"]
 
-    def test_launch_ensures_worker_secret_when_enabled(self, deps, fake_secrets, fake_docker):
+    def test_launch_ensures_worker_secret_when_enabled(
+        self, deps, fake_secrets, fake_docker
+    ):
         deps.cfg = replace(deps.cfg, per_instance_secrets=True)
         _do_launch(self._inst(userId="u1"), deps)
         assert "u1" in fake_secrets.ensured
@@ -166,6 +183,7 @@ class TestDoLaunch:
 # ---------------------------------------------------------------------------
 # Stop action tests
 # ---------------------------------------------------------------------------
+
 
 class TestDoStop:
     def _inst(self, **overrides) -> dict:
@@ -183,7 +201,9 @@ class TestDoStop:
         _do_stop(self._inst(), deps)
         assert len(fake_docker.stopped) == 1
 
-    def test_stop_mirrors_state_after_stopping(self, deps, fake_state_sync, fake_docker):
+    def test_stop_mirrors_state_after_stopping(
+        self, deps, fake_state_sync, fake_docker
+    ):
         stop_order = []
         original_stop = fake_docker.stop
         original_mirror = fake_state_sync.mirror
@@ -203,6 +223,11 @@ class TestDoStop:
         # stop must come before mirror
         assert stop_order.index("stop") < stop_order.index("mirror")
 
+    def test_gce_stop_skips_local_mirror(self, deps, fake_state_sync):
+        deps.cfg = replace(deps.cfg, runtime_backend="gce_vm")
+        _do_stop(self._inst(userId="u2"), deps)
+        assert fake_state_sync.mirrored == []
+
     def test_stop_calls_mark_stopped(self, deps, fake_convex):
         _do_stop(self._inst(userId="u2"), deps)
         assert "u2" in fake_convex.mark_stopped_calls
@@ -216,6 +241,7 @@ class TestDoStop:
 # ---------------------------------------------------------------------------
 # Stale heartbeat / relaunch tests
 # ---------------------------------------------------------------------------
+
 
 class TestStaleRelaunch:
     def test_relaunch_stops_then_starts(self, deps, fake_docker, fake_convex):
@@ -256,6 +282,7 @@ class TestStaleRelaunch:
 # hammering docker until desired/wantsAt is re-asserted.
 # ---------------------------------------------------------------------------
 
+
 class TestCrashLoopGuard:
     def _crashed_inst(self, **overrides) -> dict:
         """A row the reconcile sees as 'relaunch': desired=running, status=running,
@@ -266,14 +293,16 @@ class TestCrashLoopGuard:
             "desired": "running",
             "status": "running",
             "containerId": "deadcid",
-            "heartbeatAt": None,   # never heartbeat -> crash before first ping
+            "heartbeatAt": None,  # never heartbeat -> crash before first ping
             "wantsAt": 1000,
             "errorCount": 0,
         }
         base.update(overrides)
         return base
 
-    def test_crash_relaunch_stops_after_max_and_marks_error(self, deps, fake_docker, fake_convex):
+    def test_crash_relaunch_stops_after_max_and_marks_error(
+        self, deps, fake_docker, fake_convex
+    ):
         n = deps.cfg.max_launch_failures
         # The row stays "running" with a never-advancing heartbeat across ticks.
         fake_convex.set_status("u_crash", "running")
@@ -298,7 +327,9 @@ class TestCrashLoopGuard:
             "never called mark_error on a crash-looping instance"
         )
 
-    def test_crash_loop_issues_no_further_docker_run_after_block(self, deps, fake_docker, fake_convex):
+    def test_crash_loop_issues_no_further_docker_run_after_block(
+        self, deps, fake_docker, fake_convex
+    ):
         n = deps.cfg.max_launch_failures
         fake_convex.set_status("u_crash", "running")
 
@@ -321,7 +352,9 @@ class TestCrashLoopGuard:
             "controller kept issuing docker run after the crash-loop block"
         )
 
-    def test_healthy_heartbeat_advance_resets_counter_no_error(self, deps, fake_docker, fake_convex):
+    def test_healthy_heartbeat_advance_resets_counter_no_error(
+        self, deps, fake_docker, fake_convex
+    ):
         """A container that recovers (heartbeat ADVANCES between relaunches) is a
         legitimate stale-relaunch, NOT a crash loop — the counter resets and we
         never mark_error, even across many ticks."""
@@ -338,7 +371,9 @@ class TestCrashLoopGuard:
             "marked error on a healthily-advancing instance (false positive)"
         )
 
-    def test_crash_loop_block_clears_when_desired_reasserted(self, deps, fake_docker, fake_convex):
+    def test_crash_loop_block_clears_when_desired_reasserted(
+        self, deps, fake_docker, fake_convex
+    ):
         n = deps.cfg.max_launch_failures
         fake_convex.set_status("u_crash", "running")
         for _ in range(n + 2):
@@ -351,7 +386,9 @@ class TestCrashLoopGuard:
         # Operator/user re-asserts desired (wantsAt advances) -> the guard clears
         # and a launch is attempted again.
         fake_convex.set_status("u_crash", "stopped")
-        reasserted = self._crashed_inst(wantsAt=999999, status="stopped", containerId=None)
+        reasserted = self._crashed_inst(
+            wantsAt=999999, status="stopped", containerId=None
+        )
         action = _decide(reasserted, deps)
         assert action == "launch"
         _do_launch(reasserted, deps)
@@ -362,17 +399,20 @@ class TestCrashLoopGuard:
 # reconcile_once integration tests
 # ---------------------------------------------------------------------------
 
+
 class TestReconcileOnce:
     def test_reconcile_processes_launch_instance(self, deps, fake_convex, fake_docker):
-        fake_convex._instances = [{
-            "userId": "u1",
-            "instanceId": "inst1",
-            "desired": "running",
-            "status": "stopped",
-            "containerId": None,
-            "heartbeatAt": None,
-            "errorCount": 0,
-        }]
+        fake_convex._instances = [
+            {
+                "userId": "u1",
+                "instanceId": "inst1",
+                "desired": "running",
+                "status": "stopped",
+                "containerId": None,
+                "heartbeatAt": None,
+                "errorCount": 0,
+            }
+        ]
         actions = reconcile_once(deps)
         assert any(a["action"] == "launched" for a in actions)
 
@@ -382,15 +422,17 @@ class TestReconcileOnce:
         """Bug C2: a freshly requested instance (desired=running, status=provisioning,
         no containerId, no heartbeatAt) MUST be cold-started — docker run +
         claimInstanceForLaunch — by a single reconcile pass."""
-        fake_convex._instances = [{
-            "userId": "u_fresh",
-            "instanceId": "inst_fresh",
-            "desired": "running",
-            "status": "provisioning",
-            "containerId": None,
-            "heartbeatAt": None,
-            "errorCount": 0,
-        }]
+        fake_convex._instances = [
+            {
+                "userId": "u_fresh",
+                "instanceId": "inst_fresh",
+                "desired": "running",
+                "status": "provisioning",
+                "containerId": None,
+                "heartbeatAt": None,
+                "errorCount": 0,
+            }
+        ]
         actions = reconcile_once(deps)
         assert any(a["action"] == "launched" for a in actions), actions
         assert len(fake_docker.ran) == 1
@@ -398,31 +440,35 @@ class TestReconcileOnce:
         assert fake_convex.claimed_calls[0]["userId"] == "u_fresh"
 
     def test_reconcile_processes_stop_instance(self, deps, fake_convex, fake_docker):
-        fake_convex._instances = [{
-            "userId": "u2",
-            "instanceId": "inst2",
-            "desired": "stopped",
-            "status": "running",
-            "containerId": "fakecid",
-            "heartbeatAt": None,
-            "errorCount": 0,
-        }]
+        fake_convex._instances = [
+            {
+                "userId": "u2",
+                "instanceId": "inst2",
+                "desired": "stopped",
+                "status": "running",
+                "containerId": "fakecid",
+                "heartbeatAt": None,
+                "errorCount": 0,
+            }
+        ]
         actions = reconcile_once(deps)
         assert any(a["action"] == "stopped" for a in actions)
 
     def test_reconcile_noop_for_healthy_running(self, deps, fake_convex, fake_docker):
         fresh_ms = (1_000_000.0 - 10) * 1000
-        fake_convex._instances = [{
-            "userId": "u3",
-            "instanceId": "inst3",
-            "desired": "running",
-            "status": "running",
-            "containerId": "fakecid",
-            "heartbeatAt": fresh_ms,
-            "errorCount": 0,
-        }]
+        fake_convex._instances = [
+            {
+                "userId": "u3",
+                "instanceId": "inst3",
+                "desired": "running",
+                "status": "running",
+                "containerId": "fakecid",
+                "heartbeatAt": fresh_ms,
+                "errorCount": 0,
+            }
+        ]
         actions = reconcile_once(deps)
-        assert len(actions) == 0   # noop produces no entries
+        assert len(actions) == 0  # noop produces no entries
 
     def test_reconcile_continues_on_per_instance_exception(self, deps, fake_convex):
         """An error in one instance must not abort processing of others."""
@@ -452,6 +498,7 @@ class TestReconcileOnce:
 # run() loop immortality test
 # ---------------------------------------------------------------------------
 
+
 class TestRunLoop:
     def test_run_loop_never_dies_on_reconcile_exception(self, test_cfg):
         """run() must swallow RuntimeError exceptions from reconcile_once and keep looping.
@@ -460,7 +507,8 @@ class TestRunLoop:
         (a BaseException, not Exception) which escapes the except-Exception handler
         and terminates the loop for test purposes.
         """
-        import unittest.mock as mock
+        from unittest import mock
+
         import controller as ctrl_module
 
         call_count = {"n": 0}
@@ -486,7 +534,8 @@ class TestRunLoop:
 
     def test_run_once_flag_exits_after_single_pass(self, test_cfg):
         """--once must run exactly one pass and return."""
-        import unittest.mock as mock
+        from unittest import mock
+
         import controller as ctrl_module
 
         called = {"n": 0}
@@ -522,6 +571,7 @@ class _StopLoop(BaseException):
 # SENDBLUE_FROM_NUMBER / MINIMAX_BASE_URL.
 # ---------------------------------------------------------------------------
 
+
 class TestBuildEnvBootsWorker:
     def _set_controller_env(self, monkeypatch) -> None:
         """Set the SECRET-source vars the controller reads from its OWN env."""
@@ -534,8 +584,12 @@ class TestBuildEnvBootsWorker:
         monkeypatch.setenv("SENDBLUE_FROM_NUMBER", "+16466208124")
         monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tg-token")
         monkeypatch.setenv("EXA_API_KEY", "exa-key")
+        monkeypatch.setenv("SITES_PUBLISH_SECRET", "sites-secret")
+        monkeypatch.setenv("SUPERMEMORY_API_KEY", "sm-key")
 
-    def test_build_env_includes_exact_sendblue_secret_key_name(self, test_cfg, monkeypatch):
+    def test_build_env_includes_exact_sendblue_secret_key_name(
+        self, test_cfg, monkeypatch
+    ):
         self._set_controller_env(monkeypatch)
         env = _build_env("u1", "inst1", test_cfg, "secret-ref")
         # The worker reads SENDBLUE_API_SECRET_KEY (NOT SENDBLUE_API_SECRET).
@@ -577,7 +631,18 @@ class TestBuildEnvBootsWorker:
         env = _build_env("u1", "inst1", test_cfg, "secret-ref")
         assert env["BROWSER_HARNESS_ENABLED"] == "0"
 
-    def test_built_env_constructs_worker_config_with_no_keyerror(self, test_cfg, monkeypatch):
+    def test_build_env_includes_site_and_supermemory_secrets(
+        self, test_cfg, monkeypatch
+    ):
+        self._set_controller_env(monkeypatch)
+        env = _build_env("u1", "inst1", test_cfg, "secret-ref")
+        assert env["SITES_PUBLISH_SECRET"] == "sites-secret"
+        assert env["SUPERMEMORY_API_KEY"] == "sm-key"
+        assert env["SUPERMEMORY_BASE_URL"] == "https://api.supermemory.ai"
+
+    def test_built_env_constructs_worker_config_with_no_keyerror(
+        self, test_cfg, monkeypatch
+    ):
         """The smoking gun: feed _build_env's output to the REAL worker config
         builder. If any required name is missing/misnamed, from_env raises KeyError
         and the container would crash on boot."""
@@ -591,8 +656,13 @@ class TestBuildEnvBootsWorker:
         # tree). Its WorkerConfig.from_env() is the exact boot-time contract.
         worker_path = _os.path.abspath(
             _os.path.join(
-                _os.path.dirname(__file__), "..", "..", "..",
-                "lab", "skeleton", "worker.py",
+                _os.path.dirname(__file__),
+                "..",
+                "..",
+                "..",
+                "lab",
+                "skeleton",
+                "worker.py",
             )
         )
         mod_name = "_worker_for_envtest"
@@ -601,6 +671,7 @@ class TestBuildEnvBootsWorker:
         # worker.py imports siblings (convex_client, hermes_bridge, channels) —
         # ensure lab/skeleton is importable before exec.
         import sys as _sys
+
         _sys.path.insert(0, _os.path.dirname(worker_path))
         # Register in sys.modules BEFORE exec so dataclass() can resolve the
         # module's annotations (frozen WorkerConfig) via cls.__module__.
@@ -626,6 +697,7 @@ class TestBuildEnvBootsWorker:
 # Derived from the key prefix so a forgotten MINIMAX_BASE_URL can't silently 401
 # every container. An explicit env value always wins.
 # ---------------------------------------------------------------------------
+
 
 class TestModelEndpointContract:
     def _clear_overrides(self, monkeypatch) -> None:
@@ -659,6 +731,7 @@ class TestModelEndpointContract:
 # metrics; keep capacity conservative until a real /metrics agent exists).
 # ---------------------------------------------------------------------------
 
+
 class TestCapacityConfig:
     def test_capacity_per_host_default(self, test_cfg):
         assert test_cfg.capacity_per_host == 50
@@ -675,6 +748,7 @@ class TestCapacityConfig:
         monkeypatch.setenv("IMAGE", "img")
         monkeypatch.setenv("CAPACITY_PER_HOST", "5")
         from config import ControllerConfig
+
         cfg = ControllerConfig.from_env()
         assert cfg.capacity_per_host == 5
 
@@ -684,13 +758,24 @@ class TestCapacityConfig:
 # mirrors ONLY running tenants, fail-soft, independent of container naming.
 # ---------------------------------------------------------------------------
 
+
 class TestPeriodicMirror:
-    def _deps_with(self, instances, fake_convex, fake_docker, fake_state_sync,
-                   fake_secrets, test_cfg):
+    def _deps_with(
+        self,
+        instances,
+        fake_convex,
+        fake_docker,
+        fake_state_sync,
+        fake_secrets,
+        test_cfg,
+    ):
         fake_convex._instances = instances
         return ControllerDeps(
-            cfg=test_cfg, convex=fake_convex, docker=fake_docker,
-            state_sync=fake_state_sync, secrets=fake_secrets,
+            cfg=test_cfg,
+            convex=fake_convex,
+            docker=fake_docker,
+            state_sync=fake_state_sync,
+            secrets=fake_secrets,
             now_fn=lambda: 1_000_000.0,
         )
 
@@ -713,6 +798,7 @@ class TestPeriodicMirror:
     def test_failsoft_when_list_reconcile_raises(self, deps):
         def boom():
             raise RuntimeError("convex down")
+
         deps.convex.list_reconcile = boom
         # Must not propagate — a mirror miss can never kill the reconcile loop.
         assert _mirror_running_tenants(deps) == 0

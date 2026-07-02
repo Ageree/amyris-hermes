@@ -11,8 +11,7 @@ export function Channels() {
           she&rsquo;s already <em className="italic text-lime">where you text.</em>
         </h2>
         <p className="mx-auto mt-5 max-w-md text-base leading-relaxed text-muted">
-          connect once, then just message her. both channels are included on
-          every plan.
+          connect once, then just message her. both channels are included on every plan.
         </p>
 
         <div className="mt-10 flex items-center justify-center gap-4 sm:gap-5">
@@ -24,7 +23,6 @@ export function Channels() {
               key={c.label}
               className="inline-flex items-center gap-3 rounded-full border border-border bg-surface px-5 py-3"
             >
-              {/* eslint-disable-next-line @next/next/no-img-element */}
               <img src={c.src} alt="" aria-hidden className="h-6 w-6" />
               <span className="text-sm font-medium text-ink">{c.label}</span>
             </div>

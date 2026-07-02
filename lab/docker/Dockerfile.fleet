@@ -75,6 +75,7 @@ COPY lab/personality/SOUL.md /app/personality/SOUL.md
 # worker. Baked in the base stage so both image variants (INSTALL_HERMES 0/1)
 # have them and the worker seed can copy the skill into each tenant's HERMES_HOME.
 COPY lab/skills/browser-harness/ /app/skills/browser-harness/
+COPY lab/skills/create-site/ /app/skills/create-site/
 COPY lab/docker/fleet-entrypoint.sh /app/skeleton/fleet-entrypoint.sh
 # Copy the test suite so the build-time gate can run it.
 COPY lab/tests/    /app/tests/
@@ -200,6 +201,7 @@ RUN cd /app && \
         --ignore=/app/tests/test_library.py \
         --ignore=/app/tests/test_pending.py \
         --ignore=/app/tests/test_resolve.py \
+        --ignore=/app/tests/test_tiers_drift.py \
         -q \
         tests/
 

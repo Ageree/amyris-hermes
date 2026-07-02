@@ -1,0 +1,11 @@
+black==24.10.0
+coverage[toml]==7.6.10
+mypy==1.16.1
+pytest-cov==6.0.0
+pytest-rerunfailures==15.0
+pytest-xdist==3.6.1
+radon==6.0.1
+ruff==0.12.2
+types-PyYAML==6.0.12.20250516
+types-requests==2.32.4.20250611
+vulture==2.14

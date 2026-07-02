@@ -1,0 +1,63 @@
+{
+  "name": "amyris-hermes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Monorepo quality, test, and developer automation for Hermes.",
+  "packageManager": "npm@10.9.8",
+  "workspaces": [
+    "web",
+    "control-plane",
+    "agent",
+    "lab/photon-sidecar"
+  ],
+  "scripts": {
+    "setup": "npm ci --ignore-scripts --workspaces=false && npm --prefix web ci && npm --prefix control-plane ci && npm --prefix agent ci && npm --prefix lab/photon-sidecar ci && python3 -m pip install -r requirements-dev.txt -r fleet/controller/requirements.txt -r lab/requirements.txt -r lab/skeleton/requirements.txt",
+    "dev": "npm --prefix web run dev",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test:unit && npm run quality",
+    "lint": "eslint . && ruff check fleet/controller lab/skeleton lab/tests fleet/local",
+    "format": "prettier --write . && ruff format fleet/controller lab/skeleton lab/tests fleet/local",
+    "format:check": "prettier --check . && ruff format --check fleet/controller lab/skeleton lab/tests fleet/local",
+    "typecheck": "npm --prefix web run typecheck && npm --prefix control-plane run typecheck && npm --prefix agent run typecheck && npm --prefix lab/photon-sidecar run typecheck && mypy fleet/controller lab/skeleton",
+    "test": "npm run test:unit",
+    "test:unit": "npm --prefix web run test:unit && npm --prefix control-plane run test:unit && npm --prefix agent test && npm --prefix lab/photon-sidecar test && python3 -m pytest fleet/controller/tests lab/tests -m \"not convex_e2e and not live_channel\" -n auto --reruns 1 --reruns-delay 1 --durations=20",
+    "test:coverage": "npm --prefix web run test:coverage && npm --prefix control-plane run test:coverage && python3 -m pytest fleet/controller/tests lab/tests -m \"not convex_e2e and not live_channel\" -n auto --reruns 1 --reruns-delay 1 --cov=fleet/controller --cov=lab/skeleton --cov-report=term --cov-report=xml --cov-fail-under=70",
+    "quality": "npm run quality:size && npm run quality:todos && npm run quality:deps && npm run quality:duplicates && npm run docs:check",
+    "quality:size": "node scripts/check-large-files.mjs",
+    "quality:todos": "node scripts/check-todos.mjs",
+    "quality:deps": "knip --config knip.json --dependencies --no-config-hints && npm run quality:drift",
+    "quality:drift": "node scripts/check-package-drift.mjs",
+    "quality:duplicates": "jscpd --config .jscpd.json",
+    "docs:generate": "node scripts/generate-api-docs.mjs",
+    "docs:check": "node scripts/check-agents-docs.mjs && node scripts/generate-api-docs.mjs --check",
+    "bundle:analyze": "ANALYZE=true npm --prefix web run build",
+    "release:notes": "changeset version",
+    "precommit": "pre-commit run --all-files"
+  },
+  "devDependencies": {
+    "@changesets/cli": "^2.29.5",
+    "@eslint/js": "^9.30.1",
+    "@next/bundle-analyzer": "^15.3.4",
+    "@size-limit/file": "^11.2.0",
+    "@vitest/coverage-v8": "^4.1.9",
+    "eslint": "^9.30.1",
+    "eslint-plugin-unused-imports": "^4.1.4",
+    "jscpd": "^4.0.5",
+    "knip": "^5.62.0",
+    "prettier": "^3.6.2",
+    "size-limit": "^11.2.0",
+    "typescript-eslint": "^8.35.1"
+  },
+  "size-limit": [
+    {
+      "name": "web static chunks",
+      "path": "web/.next/static/chunks/*.js",
+      "limit": "500 KB"
+    },
+    {
+      "name": "agent build output",
+      "path": "agent/.output/**/*.{js,mjs}",
+      "limit": "750 KB"
+    }
+  ]
+}

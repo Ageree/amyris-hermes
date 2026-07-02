@@ -10,5 +10,5 @@
     "isolatedModules": true,
     "types": ["node"]
   },
-  "include": ["convex"]
+  "include": ["convex", "vitest.config.ts"]
 }

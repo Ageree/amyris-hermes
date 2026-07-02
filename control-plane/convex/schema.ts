@@ -25,7 +25,9 @@ export default defineSchema({
     tier: v.optional(tier),          // denormalized mirror of entitlements.tier (fast read)
     isOperator: v.optional(v.boolean()), // user #0 — never reaped, unlimited quota
     createdAt: v.optional(v.number()),
-  }).index("email", ["email"]),
+  })
+    .index("email", ["email"])
+    .index("phone", ["phone"]),
 
   // THE tenant resolver. Inbound (channel,address) -> userId. Uniqueness of
   // (channel,address) is enforced check-then-insert inside one mutation.

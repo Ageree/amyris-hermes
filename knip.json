@@ -1,0 +1,41 @@
+{
+  "$schema": "https://unpkg.com/knip@5/schema.json",
+  "workspaces": {
+    "web": {
+      "entry": [
+        "app/**/*.{ts,tsx}",
+        "middleware.ts",
+        "next.config.mjs",
+        "playwright.config.ts",
+        "vitest.config.ts"
+      ],
+      "project": ["**/*.{ts,tsx,mjs}"]
+    },
+    "control-plane": {
+      "entry": [
+        "convex/**/*.ts",
+        "convex_e2e/**/*.mjs",
+        "drainer/**/*.mjs",
+        "vitest.config.ts"
+      ],
+      "project": ["**/*.{ts,mjs}"]
+    },
+    "agent": {
+      "entry": ["agent/**/*.ts", "scripts/**/*.ts"],
+      "project": ["**/*.ts"]
+    },
+    "lab/photon-sidecar": {
+      "entry": ["index.mjs", "patch-spectrum-mixed-attachments.mjs"],
+      "project": ["**/*.mjs"]
+    }
+  },
+  "ignore": [
+    "**/node_modules/**",
+    "**/.next/**",
+    "**/.output/**",
+    "**/cp-generated/**",
+    "**/*.tsbuildinfo"
+  ],
+  "ignoreDependencies": ["@types/*", "@vercel/connect", "tailwindcss"],
+  "ignoreBinaries": ["mypy", "pre-commit", "python3", "ruff"]
+}

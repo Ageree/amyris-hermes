@@ -1,4 +1,6 @@
 """Tests for config.py — env var parsing and validation."""
+# ruff: noqa: PLR2004
+
 from __future__ import annotations
 
 import os
@@ -8,12 +10,19 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from config import ControllerConfig, _require, _optional, _float_env, _int_env, _bool_env
-
+from config import (
+    ControllerConfig,
+    _bool_env,
+    _float_env,
+    _int_env,
+    _optional,
+    _require,
+)
 
 # ---------------------------------------------------------------------------
 # _require
 # ---------------------------------------------------------------------------
+
 
 class TestRequire:
     def test_returns_value_when_set(self, monkeypatch):
@@ -44,6 +53,7 @@ class TestRequire:
 # _optional
 # ---------------------------------------------------------------------------
 
+
 class TestOptional:
     def test_returns_value_when_set(self, monkeypatch):
         monkeypatch.setenv("OPT_VAR", "present")
@@ -65,6 +75,7 @@ class TestOptional:
 # ---------------------------------------------------------------------------
 # _float_env
 # ---------------------------------------------------------------------------
+
 
 class TestFloatEnv:
     def test_parses_float(self, monkeypatch):
@@ -93,6 +104,7 @@ class TestFloatEnv:
 # _int_env
 # ---------------------------------------------------------------------------
 
+
 class TestIntEnv:
     def test_parses_int(self, monkeypatch):
         monkeypatch.setenv("I_VAR", "42")
@@ -120,8 +132,11 @@ class TestIntEnv:
 # _bool_env
 # ---------------------------------------------------------------------------
 
+
 class TestBoolEnv:
-    @pytest.mark.parametrize("val", ["1", "true", "True", "TRUE", "yes", "YES", "on", "ON"])
+    @pytest.mark.parametrize(
+        "val", ["1", "true", "True", "TRUE", "yes", "YES", "on", "ON"]
+    )
     def test_truthy_values(self, monkeypatch, val):
         monkeypatch.setenv("B_VAR", val)
         assert _bool_env("B_VAR", False) is True
@@ -143,6 +158,7 @@ class TestBoolEnv:
 # ---------------------------------------------------------------------------
 # ControllerConfig.from_env
 # ---------------------------------------------------------------------------
+
 
 class TestControllerConfigFromEnv:
     def _set_required_env(self, monkeypatch):
@@ -216,6 +232,29 @@ class TestControllerConfigFromEnv:
         r = cfg.redacted()
         assert r["worker_secret"] == "***"
         assert "test-secret" not in str(r)
+
+    def test_runtime_backend_defaults_to_docker(self, monkeypatch):
+        self._set_required_env(monkeypatch)
+        cfg = ControllerConfig.from_env()
+        assert cfg.runtime_backend == "docker"
+
+    def test_runtime_backend_gce_vm_fields(self, monkeypatch):
+        self._set_required_env(monkeypatch)
+        monkeypatch.setenv("RUNTIME_BACKEND", "gce_vm")
+        monkeypatch.setenv("GCE_ZONE", "europe-west4-a")
+        monkeypatch.setenv("GCE_MACHINE_TYPE", "e2-standard-4")
+        monkeypatch.setenv("GCE_TAGS", "hermes-tenant,ru-browser")
+        cfg = ControllerConfig.from_env()
+        assert cfg.runtime_backend == "gce_vm"
+        assert cfg.gce_zone == "europe-west4-a"
+        assert cfg.gce_machine_type == "e2-standard-4"
+        assert cfg.gce_tags == ("hermes-tenant", "ru-browser")
+
+    def test_invalid_runtime_backend_raises(self, monkeypatch):
+        self._set_required_env(monkeypatch)
+        monkeypatch.setenv("RUNTIME_BACKEND", "bad")
+        with pytest.raises(ValueError, match="RUNTIME_BACKEND"):
+            ControllerConfig.from_env()
 
     def test_single_host(self, monkeypatch):
         self._set_required_env(monkeypatch)

@@ -46,7 +46,7 @@ function TopBar() {
   return (
     <header className="flex items-center justify-between gap-4 border-b border-border pb-4">
       <div className="flex items-center gap-3">
-        <span className="font-mono text-lg font-medium text-lime">dhizume</span>
+        <span className="font-mono text-lg font-medium text-lime">Amyris</span>
         <span className="hidden text-faint sm:inline" aria-hidden>
           /
         </span>
@@ -80,7 +80,7 @@ function UserEmail() {
     );
   }
 
-  const label = user?.email ?? user?.displayName ?? user?.name ?? null;
+  const label = user?.email ?? user?.phone ?? user?.displayName ?? user?.name ?? null;
   if (!label) return null;
 
   return (

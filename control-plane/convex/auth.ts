@@ -1,4 +1,5 @@
 import { convexAuth } from "@convex-dev/auth/server";
+import type { PhoneConfig } from "@convex-dev/auth/server";
 import Google from "@auth/core/providers/google";
 import { Password } from "@convex-dev/auth/providers/Password";
 import type { MutationCtx } from "./_generated/server";
@@ -11,6 +12,7 @@ import { grantSignupEntitlement } from "./billing/grant";
 // the email code does NOT create a second account):
 //   - Google        — primary OAuth (needs AUTH_GOOGLE_ID / AUTH_GOOGLE_SECRET)
 //   - Password       — email+password; self-contained, powers autonomous e2e
+//   - phone          — iMessage/SMS OTP via Sendblue (needs SENDBLUE_* env)
 //   - ResendOTP      — 8-digit email code, SMS-parity onboarding (needs AUTH_RESEND_KEY)
 // A provider with absent creds only breaks ITS OWN flow at runtime; sign-in
 // session issuance depends on JWT_PRIVATE_KEY/JWKS (set in Convex env, §9).
@@ -30,6 +32,69 @@ function normalizeEmail(raw: unknown): string | undefined {
   return e.length > 0 ? e : undefined;
 }
 
+function normalizePhone(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  const digits = trimmed.replace(/\D/g, "");
+  if (!digits) return undefined;
+  if (trimmed.startsWith("+")) return `+${digits}`;
+  if (/^8\d{10}$/.test(digits)) return `+7${digits.slice(1)}`;
+  return `+${digits}`;
+}
+
+function numericCode(digits = 6): string {
+  const bytes = new Uint8Array(digits);
+  crypto.getRandomValues(bytes);
+  let code = "";
+  for (const b of bytes) code += (b % 10).toString();
+  return code;
+}
+
+const PhoneOTP: PhoneConfig = {
+  id: "phone",
+  type: "phone",
+  options: {},
+  maxAge: 60 * 15,
+  async generateVerificationToken() {
+    return numericCode();
+  },
+  async authorize(params, account) {
+    const phone = normalizePhone(params.phone);
+    if (!phone) {
+      throw new Error("Token verification requires a phone in params of signIn.");
+    }
+    if (account.providerAccountId !== phone) {
+      throw new Error("Verification code requires the same phone used to request it.");
+    }
+  },
+  async sendVerificationRequest({ identifier: phone, token }) {
+    const keyId = process.env.SENDBLUE_API_KEY_ID ?? "";
+    const secret = process.env.SENDBLUE_API_SECRET_KEY ?? "";
+    const from = process.env.SENDBLUE_FROM_NUMBER ?? "";
+    if (!keyId || !secret || !from) {
+      throw new Error("SENDBLUE_* env not configured for phone sign-in");
+    }
+
+    const res = await fetch("https://api.sendblue.co/api/send-message", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "sb-api-key-id": keyId,
+        "sb-api-secret-key": secret,
+      },
+      body: JSON.stringify({
+        number: phone,
+        from_number: from,
+        content: `Amyris code: ${token}. It expires in 15 minutes.`,
+      }),
+    });
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      throw new Error(`sendblue phone otp failed: ${res.status} ${body}`.trim());
+    }
+  },
+};
+
 export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
   providers: [
     Google,
@@ -42,6 +107,7 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
         }
       },
     }),
+    PhoneOTP,
     ResendOTP,
   ],
   callbacks: {
@@ -53,15 +119,34 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
     //   - REJECT an unverified sign-up whose email already belongs to an account,
     //   - set isOperator ONLY from a PROVEN operator email.
     async createOrUpdateUser(ctx, { existingUserId, type, profile }) {
-      // Account already linked to a user (re-sign-in) — keep it, write nothing new.
-      if (existingUserId) return existingUserId;
-
       // convex-auth types this callback's ctx as GenericMutationCtx<AnyDataModel>
       // (provider-agnostic), so ctx.db.query("users").withIndex("email") wouldn't
       // see our schema's `email` index. Re-type to OUR generated MutationCtx — at
       // runtime it IS a mutation ctx for this deployment, so this is sound.
       const db = (ctx as unknown as MutationCtx).db;
       const email = normalizeEmail(profile.email);
+      const phone = normalizePhone((profile as { phone?: unknown }).phone);
+      const now = Date.now();
+
+      // Account already linked to a user (re-sign-in). For OTP verification, patch
+      // the proven contact fields so dashboard/account reads see the latest state.
+      if (existingUserId) {
+        const patch: Record<string, string | number> = {};
+        if (type === "verification") {
+          if (email) {
+            patch.email = email;
+            patch.emailVerificationTime = now;
+          }
+          if (phone) {
+            patch.phone = phone;
+            patch.phoneVerificationTime = now;
+          }
+        }
+        if (Object.keys(patch).length > 0) {
+          await db.patch(existingUserId, patch);
+        }
+        return existingUserId;
+      }
 
       // Email ownership is proven by an OAuth provider (unless it explicitly returns
       // emailVerified:false), by the email OTP provider, or by a post-token
@@ -86,11 +171,20 @@ export const { auth, signIn, signOut, store, isAuthenticated } = convexAuth({
         }
       }
 
+      if (phone) {
+        const byPhone = await db
+          .query("users")
+          .withIndex("phone", (q) => q.eq("phone", phone))
+          .first();
+        if (byPhone) return byPhone._id;
+      }
+
       // isOperator (user #0, unlimited) is set ONLY from a proven operator email.
       const isOperator = emailProven && email === OPERATOR_EMAIL;
-      const now = Date.now();
       const userId = await db.insert("users", {
         email,
+        phone,
+        phoneVerificationTime: type === "verification" && phone ? now : undefined,
         name: typeof profile.name === "string" ? profile.name : undefined,
         image: typeof profile.image === "string" ? profile.image : undefined,
         isOperator,

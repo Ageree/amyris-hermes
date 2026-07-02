@@ -27,14 +27,15 @@ issue in ~/.hermes-savedlab, separate from this bridge. The unit tests below
 mock subprocess.run so they do not depend on a working model; the optional live
 smoke and the operator-dependent live e2e require that model routing be fixed.
 """
+
 from __future__ import annotations
 
 import os
 import re
 import subprocess
-from typing import Optional
 
 from text_cleaning import THINK_RE as _THINK
+
 # CSI / OSC ANSI escape sequences (colors, cursor moves, hyperlinks).
 _ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]|\x1b\][^\x07]*\x07|\x1b[=>]")
 # Hermes leaks operational notices to stdout even in --quiet mode (e.g.
@@ -68,7 +69,7 @@ _APPROVAL = re.compile(
 _FRAME = re.compile(r"^[ \t]*(?:[┊╭╰].*|session_id:.*)$", re.MULTILINE)
 
 
-def _with_history(message: str, history: Optional[list]) -> str:
+def _with_history(message: str, history: list | None) -> str:
     """Prepend a compact transcript of prior turns; the current message stays LAST.
 
     Hermes is spawned fresh per message (stateless), so this is how it gets
@@ -82,16 +83,26 @@ def _with_history(message: str, history: Optional[list]) -> str:
     for turn in history:
         role = turn.get("role") if isinstance(turn, dict) else None
         content = (turn.get("content") if isinstance(turn, dict) else "") or ""
-        who = "you" if role == "assistant" else "user"
+        who = (
+            "system context"
+            if role == "system"
+            else ("you" if role == "assistant" else "user")
+        )
         lines.append(f"{who}: {content}")
     lines.append("\ncurrent message (reply to this):")
     lines.append(message)
     return "\n".join(lines)
 
 
-def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
-               python_bin: str, timeout: float = 180.0,
-               history: Optional[list] = None) -> str:
+def run_hermes(
+    message: str,
+    *,
+    hermes_home: str,
+    hermes_dir: str,
+    python_bin: str,
+    timeout: float = 180.0,
+    history: list | None = None,
+) -> str:
     """Invoke headless Hermes for `message` and return the cleaned reply.
 
     `history` (prior {role, content} turns) is prepended as context so the
@@ -132,6 +143,7 @@ def run_hermes(message: str, *, hermes_home: str, hermes_dir: str,
         text=True,
         timeout=timeout,
         stdin=subprocess.DEVNULL,
+        check=False,
     )
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()

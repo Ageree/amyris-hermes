@@ -6,7 +6,14 @@
 node_modules/
 .frankenstein/
 .claude/
+.gitnexus/
 *.jsonl
+# Web frontend (not needed by fleet or eve-fleet Docker builds).
+web/
+# Docs / specs / reports not needed inside container builds.
+docs/
+reports/
+specs/
 # Secrets must NEVER be uploaded to Cloud Build (defense-in-depth; .env.example kept).
 **/.env
 **/.env.*
