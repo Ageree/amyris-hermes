@@ -23,7 +23,7 @@
   },
   "devDependencies": {
     "@types/node": "24.x",
-    "typescript": "7.0.1-rc"
+    "typescript": "7.0.2"
   },
   "overrides": {
     "ai": "^7.0.0"
