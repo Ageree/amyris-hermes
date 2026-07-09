@@ -16,9 +16,9 @@
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.0",
-    "@vercel/connect": "0.2.2",
+    "@vercel/connect": "0.3.2",
     "ai": "^7.0.0",
-    "eve": "^0.15.0",
+    "eve": "^0.22.2",
     "zod": "4.4.3"
   },
   "devDependencies": {
