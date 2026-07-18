@@ -18,13 +18,37 @@ The poller touches **zero** Convex schema/functions — lowest-risk cutover.
   + `~/.eve-drainer/eve.env` (EVE_URL, EVE_INGRESS_SECRET).
 - Old worker `com.savedcontent.worker` is **stopped + disabled** (plist → `.disabled`).
 
-Deploy after editing source here:
+Deploy after editing source here (`bucloud.mjs` is imported by `drainer.mjs` — always ship both):
 ```bash
-cp control-plane/drainer/{drainer.mjs,run.sh} ~/.eve-drainer/
+cp control-plane/drainer/{drainer.mjs,bucloud.mjs,run.sh} ~/.eve-drainer/
 cp control-plane/drainer/com.eve.drainer.plist ~/Library/LaunchAgents/
 launchctl kickstart -k gui/$(id -u)/com.eve.drainer
 tail -f ~/.eve-drainer/drainer.log
 ```
+
+## Per-user cloud browser (browser-use cloud, pay-per-use)
+
+With `BU_CLOUD_API_KEY` set, every order runs in its OWN cloud Chrome bound to that
+user's persistent browser-use profile (`bucloud.mjs`): the drainer opens a session
+(`openForUser`), `order.py` attaches to its `cdpUrl`, and the session is stopped the
+moment the task ends. Billing is **usage-based, no subscription**: BU charges the
+session's `timeout` upfront at the PAYG hourly rate and **refunds unused time on stop**
+(rounded to the minute) — so `BU_SESSION_TIMEOUT_SEC` is the hard spend cap per task and
+a normal ~4-min order costs ~$0.004 at $0.06/h. A login/3DS wall keeps the session
+alive instead and the reply carries its `live_url`: the user finishes that step in the
+same live browser, the login lands in the persistent profile, and every later order
+just runs. Cloud open failure falls back to the local engine automatically.
+
+Env:
+
+| Var | Meaning |
+|-----|---------|
+| `BU_CLOUD_API_KEY` | browser-use cloud key; setting it turns the cloud engine ON |
+| `BU_CLOUD_ENABLED=0` | kill-switch back to the local engine (key stays set) |
+| `BU_SESSION_TIMEOUT_SEC` | per-task session cap, default 900 (= max ~$0.015/task upfront, refunded down to actual minutes) |
+| `BU_PROFILES_FILE` | userKey→profileId store, default `~/.eve-drainer/bucloud-profiles.json` |
+| `BU_PROXY_HOST/PORT/USERNAME/PASSWORD` | BYO RU proxy (mobileproxy.space modem) — required for real Yandex flows; BU has no native RU exit |
+| `BU_CLOUD_BASE` | API base override (tests), default `https://api.browser-use.com/api/v2` |
 
 ## Rollback to Hermes (instant)
 ```bash

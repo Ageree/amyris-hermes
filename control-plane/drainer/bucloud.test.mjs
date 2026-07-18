@@ -26,7 +26,8 @@ const port = server.address().port;
 process.env.BU_CLOUD_BASE = `http://127.0.0.1:${port}`;
 process.env.BU_CLOUD_API_KEY = "test-key";
 // import AFTER env is set (module reads BU_BASE/BU_KEY at load).
-const { createProfile, startBrowser, stopBrowser, buildBrowserBody } = await import("./bucloud.mjs");
+const { createProfile, startBrowser, stopBrowser, buildBrowserBody, getOrCreateProfile, openForUser } =
+  await import("./bucloud.mjs");
 
 // 1. createProfile → POST /profiles {name}, auth header carried, returns id.
 const pid = await createProfile("user-+79990000000");
@@ -59,6 +60,33 @@ await stopBrowser("sess-9");
 last = seen.at(-1);
 assert.equal(last.method, "PATCH"); assert.equal(last.path, "/browsers/sess-9");
 assert.equal(last.body.action, "stop");
+
+// 5. getOrCreateProfile: FIRST call POSTs /profiles and persists; second call is a pure
+// cache hit (no new network) — one BU profile per user, ever.
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+const profFile = join(mkdtempSync(join(tmpdir(), "bucloud-test-")), "profiles.json");
+const before = seen.length;
+const p1 = await getOrCreateProfile("+79990000000", profFile);
+assert.equal(p1, "prof-123");
+assert.equal(seen.length, before + 1, "first resolve creates the profile");
+const p2 = await getOrCreateProfile("+79990000000", profFile);
+assert.equal(p2, "prof-123");
+assert.equal(seen.length, before + 1, "second resolve is a cache hit — no network");
+
+// 6. openForUser: profile resolve (cached) + browser bound to it; returns cdp+live+profileId.
+const sess = await openForUser("+79990000000", { timeoutSec: 300, proxy: null, file: profFile });
+assert.equal(sess.profileId, "prof-123");
+assert.equal(sess.cdpUrl, "https://cdp.browser-use.com/sess-9");
+assert.ok(sess.liveUrl, "liveUrl present for handoff");
+last = seen.at(-1);
+assert.equal(last.path, "/browsers");
+assert.equal(last.body.profileId, "prof-123", "browser is bound to the user's profile");
+assert.equal(last.body.timeout, 300);
+
+// 7. empty userKey is a hard error (never mint an anonymous shared profile).
+await assert.rejects(() => getOrCreateProfile("", profFile), /empty userKey/);
 
 server.close();
 console.log("bucloud self-check PASS");

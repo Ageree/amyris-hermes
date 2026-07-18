@@ -18,9 +18,19 @@
 // order at a time (Yandex anti-bot 403s concurrent sessions per IP — see gotcha). Upgrade =
 // a modem POOL sized to peak concurrency + sticky-allocate per order (cloud-browser-decision.md).
 
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 const BU_BASE = (process.env.BU_CLOUD_BASE || "https://api.browser-use.com/api/v2").replace(/\/+$/, "");
 const BU_KEY = process.env.BU_CLOUD_API_KEY || "";
 const BU_TIMEOUT_MS = Number(process.env.BU_CLOUD_HTTP_TIMEOUT_MS || 30000);
+
+// userKey → BU profileId map. Same single-host JSON pattern (and same dotfolder) as the
+// drainer's facts store: the serial drain loop means no concurrent writes. The profile
+// holds the user's Yandex login/card cookies ON BU's side — we persist only the id.
+const BU_PROFILES_FILE =
+  process.env.BU_PROFILES_FILE || `${homedir()}/.eve-drainer/bucloud-profiles.json`;
 
 // One RU modem (BYO). Prod swaps this for a pool allocator. Empty host → no customProxy
 // (dev only: BU has no RU native exit, so a real RU order needs this set).
@@ -76,6 +86,45 @@ async function startBrowser({ profileId, proxy = ruProxyFromEnv(), timeoutSec = 
   return { id: d.id, cdpUrl: d.cdpUrl, liveUrl: d.liveUrl || null };
 }
 
+// ---- Per-user glue: one persistent BU profile per user, one browser per task --------
+
+function loadProfiles(file = BU_PROFILES_FILE) {
+  try {
+    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProfileId(userKey, profileId, file = BU_PROFILES_FILE) {
+  const db = loadProfiles(file);
+  db[userKey] = { profileId, at: Date.now() };
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(db));
+}
+
+// Resolve the user's BU profileId, creating it on FIRST use (one POST /profiles per user,
+// ever). The profile is what makes "login once via live_url, every later order just runs"
+// work: cookies live in it across sessions.
+async function getOrCreateProfile(userKey, file = BU_PROFILES_FILE) {
+  if (!userKey) throw new Error("bucloud getOrCreateProfile: empty userKey");
+  const cached = loadProfiles(file)[userKey]?.profileId;
+  if (cached) return cached;
+  const id = await createProfile(`user-${userKey}`);
+  saveProfileId(userKey, id, file);
+  return id;
+}
+
+// One call the drainer makes per order: user's persistent profile + a fresh cloud browser.
+// Billing is pay-per-use: BU charges `timeoutSec` upfront and refunds unused time when the
+// caller stops the session — so timeoutSec is the hard spend cap per task, and an early
+// stopBrowser() is what turns "reserved" into "pay for actual minutes".
+async function openForUser(userKey, { timeoutSec = 900, proxy = ruProxyFromEnv(), file = BU_PROFILES_FILE } = {}) {
+  const profileId = await getOrCreateProfile(userKey, file);
+  const s = await startBrowser({ profileId, proxy, timeoutSec });
+  return { ...s, profileId };
+}
+
 // Stop a session (refunds unused time). Best-effort — never throw on cleanup.
 async function stopBrowser(id) {
   if (!id) return;
@@ -93,4 +142,14 @@ function buildBrowserBody({ profileId, proxy, timeoutSec = 600 }) {
   return body;
 }
 
-export { createProfile, startBrowser, stopBrowser, buildBrowserBody, ruProxyFromEnv, bu };
+export {
+  createProfile,
+  startBrowser,
+  stopBrowser,
+  buildBrowserBody,
+  ruProxyFromEnv,
+  bu,
+  getOrCreateProfile,
+  openForUser,
+  loadProfiles,
+};

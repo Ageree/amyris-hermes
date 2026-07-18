@@ -17,6 +17,10 @@ import { spawn } from "node:child_process";
 import { homedir } from "node:os";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
+import {
+  openForUser as buOpenForUser,
+  stopBrowser as buStopBrowser,
+} from "./bucloud.mjs";
 
 const CONVEX = (process.env.CONVEX_URL || "").replace(/\/+$/, "");
 const WORKER_SECRET = process.env.WORKER_SECRET || "";
@@ -55,6 +59,19 @@ const DEFAULT_ADDRESS = process.env.DEFAULT_ORDER_ADDRESS || "Тверская 7
 // profile, cart/route only. The drainer NEVER passes --pay: a real charge stays a
 // per-order operator-confirmed step (safety), so autonomous runs only build the cart.
 const ORDER_CDP_URL = process.env.ORDER_CDP_URL || "";
+// ---- Per-user cloud browser (browser-use cloud, pay-per-use) ----------------------
+// When BU_CLOUD_API_KEY is set, EVERY order gets its own cloud Chrome bound to THAT
+// user's persistent BU profile (bucloud.mjs): openForUser → order.py attaches to the
+// session's cdpUrl → stopBrowser right after (BU charges timeoutSec upfront and refunds
+// unused time on stop → we pay for actual minutes, no subscription). A login/3DS wall
+// keeps the session ALIVE instead: the user finishes that step themselves via live_url
+// in the SAME browser, the profile persists, and the next order just runs.
+// BU_CLOUD_ENABLED=0 is the kill-switch back to the local single-host engine.
+const BU_CLOUD_ENABLED =
+  !!process.env.BU_CLOUD_API_KEY && process.env.BU_CLOUD_ENABLED !== "0";
+// Upfront charge cap per task, seconds. 900s ≈ $0.015 max at $0.06/h PAYG; a normal
+// ~4-min order refunds down to ~$0.004.
+const BU_SESSION_TIMEOUT_SEC = Number(process.env.BU_SESSION_TIMEOUT_SEC || 900);
 const OR_KEY = process.env.MINIMAX_API_KEY || "";
 const OR_BASE = process.env.MINIMAX_BASE_URL || "https://openrouter.ai/api/v1";
 const OR_MODEL = process.env.MINIMAX_MODEL || "minimax/minimax-m3";
@@ -714,17 +731,20 @@ async function classifyOrder(text) {
   }
 }
 
-// ---- Run the local browser-use executor (order.py), parse its JSON result ---------
+// ---- Run the browser-use executor (order.py), parse its JSON result ----------------
 // Routes by service: food/grocery pass --address/--item, taxi passes --from/--to.
-// ORDER_CDP_URL (if set) flows through the env → order.py attaches to the persistent
-// logged-in Chrome. NEVER passes --pay (autonomous = cart/route only; pay is operator-gated).
-function runOrder(service, params) {
+// The CDP target order.py attaches to: an explicit `cdpUrl` (a per-task cloud session)
+// wins over the global ORDER_CDP_URL (the operator's persistent local Chrome); neither →
+// a fresh local profile. NEVER passes --pay (autonomous = cart/route only; pay is
+// operator-gated).
+function runOrder(service, params, cdpUrl) {
   return new Promise((resolve) => {
     const args = [ORDER_PY, "--service", service, "--max-steps", "34"];
     if (service === "taxi") args.push("--from", params.from, "--to", params.to);
     else args.push("--address", params.address, "--item", params.item);
     const env = { ...process.env, PLAYWRIGHT_BROWSERS_PATH: PW_BROWSERS };
-    if (ORDER_CDP_URL) env.ORDER_CDP_URL = ORDER_CDP_URL;
+    const cdp = cdpUrl || ORDER_CDP_URL;
+    if (cdp) env.ORDER_CDP_URL = cdp;
     const child = spawn(ORDER_VENV, args, { env });
     let out = "",
       err = "";
@@ -746,6 +766,67 @@ function runOrder(service, params) {
       }
     });
   });
+}
+
+// The blocking signals a USER must resolve inside the live browser (login / 3DS). For
+// these the cloud session is kept ALIVE (it dies on its own timeoutSec, capping spend)
+// and the reply carries its live_url; everything else stops the session for the refund.
+const HANDOFF_NEEDS = new Set(["NEED_LOGIN", "NEED_3DS"]);
+
+// Cloud-session lifecycle around one order (unit-tested via injected deps):
+//   open per-user browser → run engine on its cdpUrl (retry reuses the SAME session,
+//   but never retry a `needs` wall — that just burns minutes on the same wall) →
+//   stop for the refund, UNLESS the user needs the live session for login/3DS.
+// Open failure falls back to the local engine (null session) — cloud being down must
+// not take orders down with it. Engine exceptions still stop the session (no leaked
+// per-minute billing beyond the crash).
+async function execOrderEngine(service, params, userKey, deps = {}) {
+  const enabled = deps.enabled ?? BU_CLOUD_ENABLED;
+  const open = deps.open || buOpenForUser;
+  const stop = deps.stop || buStopBrowser;
+  const exec = deps.exec || runOrder;
+  const writeLog = deps.log || log;
+  const timeoutSec = deps.timeoutSec ?? BU_SESSION_TIMEOUT_SEC;
+
+  let session = null;
+  if (enabled && userKey) {
+    try {
+      session = await open(userKey, { timeoutSec });
+      writeLog(`bucloud session up id=${session.id}`); // no userKey: may be a phone number
+    } catch (e) {
+      writeLog(`bucloud open failed: ${e.message} — falling back to local engine`);
+    }
+  }
+  const cdp = session?.cdpUrl || null;
+  let res;
+  try {
+    res = await exec(service, params, cdp);
+    if (!res.ok && !res.needs) {
+      writeLog(`order attempt1 not ok (${res.status}) — retry`);
+      res = await exec(service, params, cdp);
+    }
+  } catch (e) {
+    if (session) await stop(session.id);
+    throw e;
+  }
+  const keptAlive = !!(session && res?.needs && HANDOFF_NEEDS.has(res.needs));
+  if (session && !keptAlive) await stop(session.id); // refund unused time
+  return { res, session, keptAlive };
+}
+
+// Pure: append the live-view handoff to the reply when the user must act in the still-
+// running cloud session (login / 3DS). The link IS the same browser the order ran in.
+function appendCloudHandoff(reply, res, session, timeoutSec = BU_SESSION_TIMEOUT_SEC) {
+  if (!session?.liveUrl || !HANDOFF_NEEDS.has(res?.needs)) return reply;
+  const mins = Math.max(1, Math.round(timeoutSec / 60));
+  const act =
+    res.needs === "NEED_3DS"
+      ? "подтверди оплату (3-D Secure)"
+      : "войди в Яндекс и привяжи карту";
+  return (
+    `${reply}\n\nОткрой ссылку — это живое окно того же браузера, ${act} прямо в нём ` +
+    `(окно живёт ещё ~${mins} мин, вход сохранится для будущих заказов): ${session.liveUrl}`
+  );
 }
 
 // A blocking signal from order.py (`needs`) → a friendly instruction. NEVER leaks the
@@ -825,22 +906,26 @@ async function handleOrder(row, order) {
     return log(`order id=${row.id} taxi missing from/to — asked`);
   }
   await sendReply(row, ack);
+  const engine = BU_CLOUD_ENABLED ? "cloud" : ORDER_CDP_URL ? "attach" : "fresh";
   log(
-    `order id=${row.id} service=${service} ${JSON.stringify(params)} cdp=${ORDER_CDP_URL ? "on" : "off"} — running engine`,
+    `order id=${row.id} service=${service} ${JSON.stringify(params)} engine=${engine} — running`,
   );
   // ponytail: blocks the loop ~2-4min/attempt (1 global lock). Upgrade: separate
   // order-worker/queue at >1 concurrent user. Retry once — the address picker is flaky.
-  let res = await runOrder(service, params);
-  if (!res.ok) {
-    log(`order id=${row.id} attempt1 not ok (${res.status}) — retry`);
-    res = await runOrder(service, params);
-  }
+  const userKey = row.userId || USER_ID || row.userNumber;
+  const { res, session, keptAlive } = await execOrderEngine(service, params, userKey);
   if (!(res.ok && res.final_result))
     log(`order id=${row.id} FAILED:`, JSON.stringify(res).slice(0, 200));
-  const reply = await appendLoginHandoff(formatOrderReply(res, service), res, row);
+  // Handoff: a kept-alive cloud session hands the user its OWN live_url (they act in
+  // the same browser); otherwise the legacy fleet login-handoff link path applies.
+  const reply = keptAlive
+    ? appendCloudHandoff(formatOrderReply(res, service), res, session)
+    : await appendLoginHandoff(formatOrderReply(res, service), res, row);
   await sendReply(row, reply);
   await convex("mutation", "messages:complete", { id: row.id, reply });
-  log(`order done id=${row.id} service=${service} ok=${!!res.ok}`);
+  log(
+    `order done id=${row.id} service=${service} ok=${!!res.ok} engine=${engine}${session ? ` session=${session.id}${keptAlive ? " kept-alive" : " stopped"}` : ""}`,
+  );
 }
 
 // ---- Drain loop -------------------------------------------------------------------
@@ -1000,6 +1085,9 @@ export {
   ORDER_HINT,
   formatOrderReply,
   appendLoginHandoff,
+  execOrderEngine,
+  appendCloudHandoff,
+  HANDOFF_NEEDS,
   classifyOrder,
   buildOrderArgs,
   parseRich,
