@@ -26,7 +26,7 @@ const port = server.address().port;
 process.env.BU_CLOUD_BASE = `http://127.0.0.1:${port}`;
 process.env.BU_CLOUD_API_KEY = "test-key";
 // import AFTER env is set (module reads BU_BASE/BU_KEY at load).
-const { createProfile, startBrowser, stopBrowser, buildBrowserBody, getOrCreateProfile, openForUser } =
+const { createProfile, startBrowser, stopBrowser, buildBrowserBody, getOrCreateProfile, openForUser, timeoutMinutes } =
   await import("./bucloud.mjs");
 
 // 1. createProfile → POST /profiles {name}, auth header carried, returns id.
@@ -45,15 +45,20 @@ last = seen.at(-1);
 assert.equal(last.path, "/browsers");
 assert.equal(last.body.profileId, "prof-123");
 assert.deepEqual(last.body.customProxy, { host: "ru.modem", port: 8080, username: "u", password: "p" });
-assert.equal(last.body.timeout, 300);
+assert.equal(last.body.timeout, 5, "wire timeout is MINUTES (300s → 5), BU 422s on seconds");
 assert.ok(!("proxyCountryCode" in last.body), "BYO proxy → no native country code");
 
 // 3. buildBrowserBody is pure & branches correctly (proxy vs no-proxy).
 assert.deepEqual(buildBrowserBody({ profileId: "p", proxy: { host: "h", port: 1 }, timeoutSec: 600 }),
-  { timeout: 600, profileId: "p", customProxy: { host: "h", port: 1 } });
+  { timeout: 10, profileId: "p", customProxy: { host: "h", port: 1 } });
 const noProxy = buildBrowserBody({ profileId: "p", proxy: null, timeoutSec: 600 });
 assert.ok(!("proxyCountryCode" in noProxy), "no proxy → proxyCountryCode omitted (strict enums reject null)");
 assert.ok(!("customProxy" in noProxy), "no proxy → no customProxy");
+// seconds→minutes boundary conversion: ceil, floor 1, BU hard cap 240 min.
+assert.equal(timeoutMinutes(900), 15, "900s → 15 min (the default order cap)");
+assert.equal(timeoutMinutes(30), 1, "sub-minute still buys a full minute");
+assert.equal(timeoutMinutes(61), 2, "partial minute rounds UP (never under-reserve)");
+assert.equal(timeoutMinutes(999999), 240, "clamped to BU max 240 min");
 
 // 4. stopBrowser → PATCH /browsers/{id} {action:"stop"}.
 await stopBrowser("sess-9");
@@ -83,7 +88,7 @@ assert.ok(sess.liveUrl, "liveUrl present for handoff");
 last = seen.at(-1);
 assert.equal(last.path, "/browsers");
 assert.equal(last.body.profileId, "prof-123", "browser is bound to the user's profile");
-assert.equal(last.body.timeout, 300);
+assert.equal(last.body.timeout, 5, "wire timeout in minutes");
 
 // 7. empty userKey is a hard error (never mint an anonymous shared profile).
 await assert.rejects(() => getOrCreateProfile("", profFile), /empty userKey/);

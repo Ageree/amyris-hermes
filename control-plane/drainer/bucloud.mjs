@@ -6,10 +6,11 @@
 //               NOT do itself), we send the user this URL; they act in the SAME live session,
 //               the profile persists, and future orders just run.
 //
-// API verified 2026-06-28 from browser-use CLOUD.md:
+// API verified 2026-07-19 against the live api.browser-use.com:
 //   POST  /api/v2/profiles            {name?}                       -> {id}
 //   POST  /api/v2/browsers            {profileId?,customProxy?,proxyCountryCode?,timeout?}
 //                                                                    -> {id,cdpUrl,liveUrl}
+//         `timeout` is in MINUTES, 1..240 (422 "less_than_equal 240" on seconds-sized values)
 //   PATCH /api/v2/browsers/{id}       {action:"stop"}               -> (refunds unused time)
 // Native proxyCountryCode enum is us/uk/fr/it/jp/au/de/fi/ca/in — NO `ru`, so a RU session
 // REQUIRES a BYO `customProxy` (a mobileproxy.space modem). Pure HTTP, no deps.
@@ -76,8 +77,14 @@ async function createProfile(name) {
 
 // Start a cloud browser bound to the user's profile + a BYO RU proxy. Returns the bits the
 // caller needs: the session id (to stop), cdpUrl (for order.py), liveUrl (for handoff).
+// Our whole API speaks seconds (timeoutSec); BU's wire field is minutes 1..240 — convert
+// at the boundary only. Ceil so a sub-minute cap still buys a full billable minute.
+function timeoutMinutes(timeoutSec) {
+  return Math.min(240, Math.max(1, Math.ceil(timeoutSec / 60)));
+}
+
 async function startBrowser({ profileId, proxy = ruProxyFromEnv(), timeoutSec = 600 } = {}) {
-  const body = { timeout: timeoutSec };
+  const body = { timeout: timeoutMinutes(timeoutSec) };
   if (profileId) body.profileId = profileId;
   // BYO proxy (RU modem) when configured; otherwise OMIT both proxy fields — no BU
   // proxy at all. (Never send proxyCountryCode: null — strict enum validation may
@@ -137,7 +144,7 @@ async function stopBrowser(id) {
 // Build the per-order request body WITHOUT calling the network — pure, so the wiring
 // (profileId + BYO-proxy vs native-country branch) is unit-checkable offline.
 function buildBrowserBody({ profileId, proxy, timeoutSec = 600 }) {
-  const body = { timeout: timeoutSec };
+  const body = { timeout: timeoutMinutes(timeoutSec) };
   if (profileId) body.profileId = profileId;
   if (proxy?.host) body.customProxy = proxy; // no proxy → omit both proxy fields
   return body;
@@ -145,6 +152,7 @@ function buildBrowserBody({ profileId, proxy, timeoutSec = 600 }) {
 
 export {
   createProfile,
+  timeoutMinutes,
   startBrowser,
   stopBrowser,
   buildBrowserBody,
