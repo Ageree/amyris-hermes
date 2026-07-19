@@ -6,10 +6,11 @@
 //               NOT do itself), we send the user this URL; they act in the SAME live session,
 //               the profile persists, and future orders just run.
 //
-// API verified 2026-06-28 from browser-use CLOUD.md:
+// API verified 2026-07-19 against the live api.browser-use.com:
 //   POST  /api/v2/profiles            {name?}                       -> {id}
 //   POST  /api/v2/browsers            {profileId?,customProxy?,proxyCountryCode?,timeout?}
 //                                                                    -> {id,cdpUrl,liveUrl}
+//         `timeout` is in MINUTES, 1..240 (422 "less_than_equal 240" on seconds-sized values)
 //   PATCH /api/v2/browsers/{id}       {action:"stop"}               -> (refunds unused time)
 // Native proxyCountryCode enum is us/uk/fr/it/jp/au/de/fi/ca/in — NO `ru`, so a RU session
 // REQUIRES a BYO `customProxy` (a mobileproxy.space modem). Pure HTTP, no deps.
@@ -18,9 +19,19 @@
 // order at a time (Yandex anti-bot 403s concurrent sessions per IP — see gotcha). Upgrade =
 // a modem POOL sized to peak concurrency + sticky-allocate per order (cloud-browser-decision.md).
 
+import { homedir } from "node:os";
+import { dirname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+
 const BU_BASE = (process.env.BU_CLOUD_BASE || "https://api.browser-use.com/api/v2").replace(/\/+$/, "");
 const BU_KEY = process.env.BU_CLOUD_API_KEY || "";
 const BU_TIMEOUT_MS = Number(process.env.BU_CLOUD_HTTP_TIMEOUT_MS || 30000);
+
+// userKey → BU profileId map. Same single-host JSON pattern (and same dotfolder) as the
+// drainer's facts store: the serial drain loop means no concurrent writes. The profile
+// holds the user's Yandex login/card cookies ON BU's side — we persist only the id.
+const BU_PROFILES_FILE =
+  process.env.BU_PROFILES_FILE || `${homedir()}/.eve-drainer/bucloud-profiles.json`;
 
 // One RU modem (BYO). Prod swaps this for a pool allocator. Empty host → no customProxy
 // (dev only: BU has no RU native exit, so a real RU order needs this set).
@@ -66,14 +77,61 @@ async function createProfile(name) {
 
 // Start a cloud browser bound to the user's profile + a BYO RU proxy. Returns the bits the
 // caller needs: the session id (to stop), cdpUrl (for order.py), liveUrl (for handoff).
+// Our whole API speaks seconds (timeoutSec); BU's wire field is minutes 1..240 — convert
+// at the boundary only. Ceil so a sub-minute cap still buys a full billable minute.
+function timeoutMinutes(timeoutSec) {
+  return Math.min(240, Math.max(1, Math.ceil(timeoutSec / 60)));
+}
+
 async function startBrowser({ profileId, proxy = ruProxyFromEnv(), timeoutSec = 600 } = {}) {
-  const body = { timeout: timeoutSec };
+  const body = { timeout: timeoutMinutes(timeoutSec) };
   if (profileId) body.profileId = profileId;
-  if (proxy?.host) body.customProxy = proxy; // BYO RU modem (preferred for Yandex)
-  else body.proxyCountryCode = null; // no RU native; null = no BU proxy (dev fallback only)
+  // BYO proxy (RU modem) when configured; otherwise OMIT both proxy fields — no BU
+  // proxy at all. (Never send proxyCountryCode: null — strict enum validation may
+  // reject an explicit null, and "absent" is the real meaning anyway.)
+  if (proxy?.host) body.customProxy = proxy;
   const d = await bu("POST", "/browsers", body);
   if (!d?.cdpUrl) throw new Error("bucloud startBrowser: no cdpUrl in response");
   return { id: d.id, cdpUrl: d.cdpUrl, liveUrl: d.liveUrl || null };
+}
+
+// ---- Per-user glue: one persistent BU profile per user, one browser per task --------
+
+function loadProfiles(file = BU_PROFILES_FILE) {
+  try {
+    return existsSync(file) ? JSON.parse(readFileSync(file, "utf8")) : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveProfileId(userKey, profileId, file = BU_PROFILES_FILE) {
+  const db = loadProfiles(file);
+  db[userKey] = { profileId, at: Date.now() };
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify(db));
+}
+
+// Resolve the user's BU profileId, creating it on FIRST use (one POST /profiles per user,
+// ever). The profile is what makes "login once via live_url, every later order just runs"
+// work: cookies live in it across sessions.
+async function getOrCreateProfile(userKey, file = BU_PROFILES_FILE) {
+  if (!userKey) throw new Error("bucloud getOrCreateProfile: empty userKey");
+  const cached = loadProfiles(file)[userKey]?.profileId;
+  if (cached) return cached;
+  const id = await createProfile(`user-${userKey}`);
+  saveProfileId(userKey, id, file);
+  return id;
+}
+
+// One call the drainer makes per order: user's persistent profile + a fresh cloud browser.
+// Billing is pay-per-use: BU charges `timeoutSec` upfront and refunds unused time when the
+// caller stops the session — so timeoutSec is the hard spend cap per task, and an early
+// stopBrowser() is what turns "reserved" into "pay for actual minutes".
+async function openForUser(userKey, { timeoutSec = 900, proxy = ruProxyFromEnv(), file = BU_PROFILES_FILE } = {}) {
+  const profileId = await getOrCreateProfile(userKey, file);
+  const s = await startBrowser({ profileId, proxy, timeoutSec });
+  return { ...s, profileId };
 }
 
 // Stop a session (refunds unused time). Best-effort — never throw on cleanup.
@@ -86,11 +144,21 @@ async function stopBrowser(id) {
 // Build the per-order request body WITHOUT calling the network — pure, so the wiring
 // (profileId + BYO-proxy vs native-country branch) is unit-checkable offline.
 function buildBrowserBody({ profileId, proxy, timeoutSec = 600 }) {
-  const body = { timeout: timeoutSec };
+  const body = { timeout: timeoutMinutes(timeoutSec) };
   if (profileId) body.profileId = profileId;
-  if (proxy?.host) body.customProxy = proxy;
-  else body.proxyCountryCode = null;
+  if (proxy?.host) body.customProxy = proxy; // no proxy → omit both proxy fields
   return body;
 }
 
-export { createProfile, startBrowser, stopBrowser, buildBrowserBody, ruProxyFromEnv, bu };
+export {
+  createProfile,
+  timeoutMinutes,
+  startBrowser,
+  stopBrowser,
+  buildBrowserBody,
+  ruProxyFromEnv,
+  bu,
+  getOrCreateProfile,
+  openForUser,
+  loadProfiles,
+};
