@@ -79,8 +79,10 @@ async function createProfile(name) {
 async function startBrowser({ profileId, proxy = ruProxyFromEnv(), timeoutSec = 600 } = {}) {
   const body = { timeout: timeoutSec };
   if (profileId) body.profileId = profileId;
-  if (proxy?.host) body.customProxy = proxy; // BYO RU modem (preferred for Yandex)
-  else body.proxyCountryCode = null; // no RU native; null = no BU proxy (dev fallback only)
+  // BYO proxy (RU modem) when configured; otherwise OMIT both proxy fields — no BU
+  // proxy at all. (Never send proxyCountryCode: null — strict enum validation may
+  // reject an explicit null, and "absent" is the real meaning anyway.)
+  if (proxy?.host) body.customProxy = proxy;
   const d = await bu("POST", "/browsers", body);
   if (!d?.cdpUrl) throw new Error("bucloud startBrowser: no cdpUrl in response");
   return { id: d.id, cdpUrl: d.cdpUrl, liveUrl: d.liveUrl || null };
@@ -137,8 +139,7 @@ async function stopBrowser(id) {
 function buildBrowserBody({ profileId, proxy, timeoutSec = 600 }) {
   const body = { timeout: timeoutSec };
   if (profileId) body.profileId = profileId;
-  if (proxy?.host) body.customProxy = proxy;
-  else body.proxyCountryCode = null;
+  if (proxy?.host) body.customProxy = proxy; // no proxy → omit both proxy fields
   return body;
 }
 

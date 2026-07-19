@@ -52,7 +52,7 @@ assert.ok(!("proxyCountryCode" in last.body), "BYO proxy → no native country c
 assert.deepEqual(buildBrowserBody({ profileId: "p", proxy: { host: "h", port: 1 }, timeoutSec: 600 }),
   { timeout: 600, profileId: "p", customProxy: { host: "h", port: 1 } });
 const noProxy = buildBrowserBody({ profileId: "p", proxy: null, timeoutSec: 600 });
-assert.equal(noProxy.proxyCountryCode, null);
+assert.ok(!("proxyCountryCode" in noProxy), "no proxy → proxyCountryCode omitted (strict enums reject null)");
 assert.ok(!("customProxy" in noProxy), "no proxy → no customProxy");
 
 // 4. stopBrowser → PATCH /browsers/{id} {action:"stop"}.
